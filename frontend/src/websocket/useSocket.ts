@@ -105,9 +105,8 @@ class RealtimeClient {
     const token = getAccessToken();
     if (!token) return;
 
-    const proto = window.location.protocol === "https:" ? "wss" : "ws";
     const base = import.meta.env.VITE_API_URL || window.location.origin;
-    const wsUrl = base.replace(/^http/, proto);
+    const wsUrl = base.replace(/^https:/, "wss:").replace(/^http:/, "ws:");
     const url = `${wsUrl}/api/v1/ws`;
 
     useUi.getState().setConnection("connecting");

@@ -45,8 +45,8 @@ export function LoginPage() {
 
   return (
     <div className="login-page">
-      <div className="logo">🍽️ Restaurante</div>
-      <div className="subtitle">Gestión de pedidos en tiempo real</div>
+      <div className="logo"><img className="login-mark" src="/favicon.png" alt="" />Restaurante</div>
+      <div className="subtitle">Tu operación, servida en tiempo real</div>
 
       <form
         onSubmit={(event) => {

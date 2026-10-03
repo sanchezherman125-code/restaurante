@@ -11,13 +11,13 @@ export default defineConfig(({ mode }) => {
       react(),
       VitePWA({
         registerType: "autoUpdate",
-        includeAssets: ["icons/icon-192.png", "icons/icon-512.png", "favicon.svg"],
+        includeAssets: ["favicon.png", "icons/icon-192.png", "icons/icon-512.png"],
         manifest: {
           name: "Restaurante — Gestión de Pedidos",
           short_name: "Restaurante",
           description: "Pedidos, cocina, parrilla y cobros en tiempo real",
-          theme_color: "#0f172a",
-          background_color: "#0f172a",
+          theme_color: "#0c0d0f",
+          background_color: "#0c0d0f",
           display: "standalone",
           orientation: "portrait",
           start_url: "/",

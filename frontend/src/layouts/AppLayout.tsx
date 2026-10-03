@@ -12,26 +12,26 @@ interface NavItem {
 
 export const NAV_BY_ROLE: Record<string, NavItem[]> = {
   WAITER: [
-    { to: "/mesas", icon: "🟩", label: "Mesas" },
-    { to: "/pedidos", icon: "🧾", label: "Pedidos" },
-    { to: "/gastos", icon: "💸", label: "Gastos" },
+    { to: "/mesas", icon: "/icons/tables.png", label: "Mesas" },
+    { to: "/pedidos", icon: "/icons/checklist.png", label: "Pedidos" },
+    { to: "/gastos", icon: "/icons/payments.png", label: "Gastos" },
   ],
   KITCHEN: [
-    { to: "/comandas", icon: "👨‍🍳", label: "Comandas" },
-    { to: "/gastos", icon: "💸", label: "Gastos" },
-    { to: "/compras", icon: "🛒", label: "Compras" },
+    { to: "/comandas", icon: "/icons/kitchen.png", label: "Comandas" },
+    { to: "/gastos", icon: "/icons/payments.png", label: "Gastos" },
+    { to: "/compras", icon: "/icons/checklist.png", label: "Compras" },
   ],
   GRILL: [
-    { to: "/comandas", icon: "🔥", label: "Parrilla" },
-    { to: "/gastos", icon: "💸", label: "Gastos" },
-    { to: "/compras", icon: "🛒", label: "Compras" },
+    { to: "/comandas", icon: "/icons/kitchen.png", label: "Parrilla" },
+    { to: "/gastos", icon: "/icons/payments.png", label: "Gastos" },
+    { to: "/compras", icon: "/icons/checklist.png", label: "Compras" },
   ],
   ADMIN: [
-    { to: "/panel", icon: "📊", label: "Panel" },
-    { to: "/mesas", icon: "🟩", label: "Mesas" },
-    { to: "/comandas", icon: "🍳", label: "Cocina" },
-    { to: "/reportes", icon: "📈", label: "Reportes" },
-    { to: "/mas", icon: "⋯", label: "Más" },
+    { to: "/panel", icon: "/icons/dashboard.png", label: "Panel" },
+    { to: "/mesas", icon: "/icons/tables.png", label: "Mesas" },
+    { to: "/comandas", icon: "/icons/kitchen.png", label: "Cocina" },
+    { to: "/reportes", icon: "/icons/reports.png", label: "Reportes" },
+    { to: "/mas", icon: "/icons/checklist.png", label: "Más" },
   ],
 };
 
@@ -47,12 +47,12 @@ export function AppLayout() {
   return (
     <div className="app-shell">
       <header className="app-header">
-        <span className="brand">🍽️ Restaurante</span>
+        <span className="brand"><img className="brand-mark" src="/favicon.png" alt="" />Restaurante</span>
         <span className="chip info">{user?.display_name}</span>
         <span className="spacer" />
         <ConnectionIndicator />
         <SyncIndicator />
-        <button className="btn ghost small" onClick={toggleSound} title="Sonido de notificaciones">
+        <button className="btn ghost small" onClick={toggleSound} title="Sonido de notificaciones" aria-label="Sonido de notificaciones">
           {soundEnabled ? "🔔" : "🔕"}
         </button>
         <button
@@ -62,6 +62,7 @@ export function AppLayout() {
             navigate("/login");
           }}
           title="Cerrar sesión"
+          aria-label="Cerrar sesión"
         >
           ⎋
         </button>
@@ -74,8 +75,8 @@ export function AppLayout() {
       <nav className="bottom-nav">
         {nav.map((item) => (
           <NavLink key={item.to} to={item.to} className={({ isActive }) => (isActive ? "active" : "")}>
-            <span className="nav-icon">{item.icon}</span>
-            {item.label}
+            <img className="nav-icon" src={item.icon} alt="" aria-hidden="true" />
+            <span>{item.label}</span>
           </NavLink>
         ))}
       </nav>

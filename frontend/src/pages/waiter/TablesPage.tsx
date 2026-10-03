@@ -6,6 +6,7 @@ import { Modal } from "../../components/Modal";
 import { EmptyState, Spinner } from "../../components/Layout";
 import { errorMessage, sendOrQueue } from "../../lib/send";
 import { usePendingOrders } from "../../stores/pendingOrders";
+import { useSession } from "../../stores/session";
 import { useUi } from "../../stores/ui";
 
 export function TablesPage() {
@@ -16,6 +17,7 @@ export function TablesPage() {
   const [creating, setCreating] = useState(false);
   const pendingRecords = usePendingOrders((state) => state.records);
   const addPending = usePendingOrders((state) => state.add);
+  const user = useSession((state) => state.user);
 
   const tables = useQuery({ queryKey: ["tables"], queryFn: tablesApi.list });
 
@@ -94,7 +96,10 @@ export function TablesPage() {
   return (
     <div className="stack">
       <div className="section-title" style={{ marginTop: 0 }}>
-        <h2>Salón</h2>
+        <div>
+          <span className="hint">Hola, {user?.display_name?.split(" ")[0] ?? "equipo"}</span>
+          <h2>Salón</h2>
+        </div>
         <span className="hint">{tables.data?.length ?? 0} mesas</span>
       </div>
 

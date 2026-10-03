@@ -1,0 +1,2557 @@
+# ESPECIFICACIÓN TÉCNICA V1
+## Sistema de Gestión de Pedidos para Restaurante
+
+**Estado:** Aprobado para desarrollo de V1 piloto  
+**Frontend:** React + TypeScript + Vite + PWA  
+**Backend:** Python + FastAPI  
+**Base de datos:** PostgreSQL en Supabase  
+**Archivos:** Supabase Storage  
+**Backend pruebas:** Render  
+**Tiempo real:** WebSockets  
+**Objetivo:** Piloto funcional en restaurante real
+
+---
+
+# 1. OBJETIVO DEL SISTEMA
+
+Construir una aplicación web progresiva (PWA) para mejorar la comunicación y operación entre:
+
+- Meseros
+- Cocina
+- Parrilla
+- Dueño / administrador
+
+El principal problema a solucionar es reemplazar las comandas físicas y reducir:
+
+- pérdida de pedidos;
+- desplazamientos del mesero hacia cocina;
+- confusión entre mesas;
+- demora en comunicación;
+- descoordinación entre cocina y parrilla;
+- dificultad para conocer ventas y gastos;
+- pérdida de información al finalizar el turno.
+
+La aplicación debe funcionar en:
+
+- Android
+- iPhone
+- tablets
+- PC
+
+La misma aplicación deberá adaptarse según el rol autenticado.
+
+---
+
+# 2. PRINCIPIO DE DESARROLLO
+
+Esta es una **V1 piloto**.
+
+No se deben añadir funcionalidades no especificadas.
+
+No implementar todavía:
+
+- inventario detallado;
+- descuento automático de ingredientes;
+- facturación SUNAT;
+- integración con pasarelas de pago;
+- delivery avanzado;
+- GPS;
+- impresoras térmicas;
+- servidor local;
+- SMS;
+- WhatsApp;
+- inteligencia artificial;
+- contabilidad completa.
+
+El diseño deberá permitir agregar estas funcionalidades posteriormente sin rehacer completamente el sistema.
+
+---
+
+# 3. ROLES
+
+## 3.1 MESERO
+
+Cada mesero tendrá una cuenta individual.
+
+Puede:
+
+- iniciar sesión;
+- visualizar mesas;
+- abrir atención de una mesa;
+- registrar cantidad de personas;
+- crear pedidos;
+- agregar platos posteriormente a la misma mesa;
+- enviar comandas;
+- visualizar estado de pedidos;
+- cancelar productos;
+- modificar pedidos permitidos;
+- registrar sustituciones;
+- visualizar disponibilidad de platos;
+- recibir avisos de pedidos listos;
+- registrar gastos;
+- adjuntar comprobantes opcionalmente;
+- consultar sus pedidos activos;
+- marcar entrega al cliente cuando corresponda.
+
+Cada pedido debe conservar permanentemente:
+
+`created_by_waiter_id`
+
+El mesero creador del pedido NO cambia aunque otros usuarios intervengan posteriormente.
+
+---
+
+# 3.2 COCINA
+
+La cuenta de cocina puede ser compartida.
+
+Puede:
+
+- visualizar pedidos enviados a cocina;
+- visualizar pedidos agrupados por mesa;
+- visualizar comandas en orden de llegada;
+- visualizar platos;
+- visualizar cantidades;
+- visualizar observaciones;
+- visualizar guarniciones;
+- cambiar estados de preparación;
+- marcar pedidos/platos listos;
+- marcar platos como disponibles o agotados;
+- registrar gastos;
+- adjuntar comprobantes;
+- crear lista manual de compras para el día siguiente.
+
+Cocina NO administra usuarios.
+
+Cocina NO modifica precios.
+
+---
+
+# 3.3 PARRILLA
+
+La cuenta de parrilla puede ser compartida.
+
+Puede:
+
+- visualizar únicamente productos correspondientes a parrilla;
+- visualizar mesa;
+- visualizar comanda;
+- visualizar observaciones;
+- visualizar término de carne cuando corresponda;
+- cambiar estado de preparación;
+- marcar preparación terminada;
+- coordinar visualmente la salida con cocina;
+- crear elementos para lista de compras del día siguiente;
+- registrar gastos si corresponde.
+
+---
+
+# 3.4 ADMIN
+
+Representa al dueño.
+
+Puede:
+
+- visualizar operación actual;
+- visualizar ventas;
+- visualizar gastos;
+- visualizar mesas atendidas;
+- visualizar cantidad de personas atendidas;
+- visualizar platos vendidos;
+- visualizar ventas por mesero;
+- visualizar tiempos de preparación;
+- visualizar reportes;
+- consultar historial;
+- visualizar comprobantes;
+- visualizar lista de compras;
+- gestionar usuarios;
+- gestionar mesas;
+- gestionar carta;
+- gestionar categorías;
+- modificar precios;
+- configurar tiempos esperados de preparación;
+- cerrar turno;
+- registrar pagos;
+- dividir cuentas;
+- consultar turnos anteriores.
+
+El historial de días anteriores será exclusivo del ADMIN.
+
+---
+
+# 4. AUTENTICACIÓN
+
+Utilizar:
+
+`usuario + PIN`
+
+El PIN nunca deberá almacenarse en texto plano.
+
+Usar hashing seguro con Argon2id.
+
+Requisitos:
+
+- rate limiting para login;
+- bloqueo temporal después de múltiples intentos fallidos;
+- sesiones seguras;
+- HTTPS obligatorio en producción;
+- backend como autoridad de permisos.
+
+Nunca confiar en el rol enviado por el frontend.
+
+El backend deberá comprobar permisos en cada operación.
+
+---
+
+# 5. TIPOS DE PEDIDO
+
+El sistema debe soportar:
+
+```text
+DINE_IN
+TAKEAWAY
+DELIVERY
+```
+
+## DINE_IN
+
+Debe tener:
+
+- mesa;
+- cantidad de personas.
+
+## TAKEAWAY
+
+La mesa puede ser nula.
+
+## DELIVERY
+
+La mesa puede ser nula.
+
+En V1 no implementar módulo avanzado de delivery.
+
+Se permitirá una nota opcional para información adicional.
+
+---
+
+# 6. CONCEPTO PEDIDO VS COMANDA
+
+Es obligatorio diferenciar estos conceptos.
+
+## Pedido
+
+Representa toda la atención de una mesa/cliente.
+
+Ejemplo:
+
+```text
+Mesa 4
+Pedido #120
+
+20:10 → Comanda #1
+20:25 → Comanda #2
+20:40 → Comanda #3
+```
+
+El pedido permanece abierto mientras el cliente siga consumiendo.
+
+## Comanda
+
+Cada vez que el mesero envía nuevos productos a preparación debe crearse una nueva comanda.
+
+NO mezclar silenciosamente productos nuevos dentro de una comanda anterior.
+
+Esto permitirá saber:
+
+- qué se pidió inicialmente;
+- qué se agregó después;
+- cuándo fue enviado;
+- cuánto demoró.
+
+---
+
+# 7. MODELO DE PEDIDOS
+
+Aunque el cliente visualice pedidos agrupados por mesa, internamente cada producto debe manejarse individualmente.
+
+Ejemplo:
+
+```text
+Mesa 5
+
+1 Parrilla       → PREPARING
+1 Sopa           → READY
+1 Guarnición     → PENDING
+1 Gaseosa        → DELIVERED
+```
+
+Esto es obligatorio para permitir coordinación entre áreas.
+
+---
+
+# 8. ÁREA DE PREPARACIÓN
+
+Cada producto de la carta deberá definir:
+
+```text
+preparation_area
+```
+
+Valores iniciales:
+
+```text
+KITCHEN
+GRILL
+WAITER
+```
+
+Ejemplo:
+
+```text
+Pollo a la brasa → KITCHEN
+
+Parrilla especial → GRILL
+
+Inca Kola → WAITER
+```
+
+Al crear una comanda, el backend deberá distribuir automáticamente los elementos según su área.
+
+---
+
+# 9. ESTADOS DE LOS ITEMS
+
+Utilizar como mínimo:
+
+```text
+PENDING
+PREPARING
+READY
+DELIVERED
+CANCELLED
+```
+
+Transiciones normales:
+
+```text
+PENDING
+   ↓
+PREPARING
+   ↓
+READY
+   ↓
+DELIVERED
+```
+
+Cancelación:
+
+```text
+PENDING → CANCELLED
+
+PREPARING → CANCELLED
+```
+
+Si se cancela mientras estaba:
+
+`PREPARING`
+
+debe registrarse explícitamente que el producto ya había comenzado a prepararse.
+
+Guardar:
+
+```text
+cancelled_at
+cancelled_by
+cancelled_after_preparation_started
+cancellation_reason
+```
+
+---
+
+# 10. ESTADO GENERAL DEL PEDIDO
+
+El frontend puede mostrar un estado simplificado calculado a partir de sus items.
+
+Estados posibles:
+
+```text
+OPEN
+IN_PREPARATION
+READY
+DELIVERED
+PAID
+CLOSED
+```
+
+No depender únicamente de este estado para la lógica interna.
+
+Los estados individuales de `order_items` son la fuente principal de preparación.
+
+---
+
+# 11. ORDEN DE PREPARACIÓN
+
+Los pedidos se mostrarán principalmente por:
+
+`orden de llegada`
+
+Orden:
+
+```text
+created_at ASC
+```
+
+En V1 no implementar sistema complejo de prioridad manual.
+
+---
+
+# 12. COORDINACIÓN COCINA / PARRILLA
+
+Cocina y parrilla deben visualizar el pedido asociado a la misma mesa.
+
+Ejemplo:
+
+```text
+MESA 7
+
+COCINA
+✓ Papa
+✓ Ensalada
+
+PARRILLA
+⏳ Parrilla especial
+
+ESTADO GENERAL:
+Esperando parrilla
+```
+
+Cuando todos los elementos necesarios estén `READY`, el sistema puede marcar visualmente:
+
+```text
+PEDIDO LISTO
+```
+
+y notificar al mesero.
+
+---
+
+# 13. TIEMPOS DE PREPARACIÓN
+
+Los productos podrán tener:
+
+```text
+expected_prep_minutes
+```
+
+Ejemplo:
+
+```text
+Parrilla especial = 15
+```
+
+Guardar timestamps reales:
+
+```text
+preparation_started_at
+ready_at
+```
+
+Calcular:
+
+```text
+actual_preparation_seconds
+```
+
+Esto permitirá posteriormente generar métricas.
+
+---
+
+# 14. AVISO DE PROXIMIDAD
+
+Cuando un producto tenga tiempo esperado configurado, podrá generarse un aviso aproximadamente:
+
+`3 minutos antes`
+
+del tiempo máximo esperado.
+
+Ejemplo:
+
+```text
+Parrilla: 15 minutos
+
+Minuto 12:
+"Pedido Mesa 4: aproximadamente 3 minutos"
+```
+
+Esto es un temporizador basado en tiempo esperado.
+
+NO presentarlo como predicción exacta.
+
+---
+
+# 15. NOTIFICACIONES
+
+Implementar:
+
+## Dentro de la aplicación
+
+Eventos visuales y sonoros.
+
+## Web Push
+
+Cuando el navegador/dispositivo lo permita.
+
+Ejemplos:
+
+```text
+Mesa 4 — Pedido listo
+
+Mesa 7 — Parrilla lista
+
+Mesa 3 — Pedido aproximadamente en 3 minutos
+```
+
+La aplicación no debe depender exclusivamente de Push.
+
+WebSocket + consulta REST serán la fuente principal.
+
+---
+
+# 16. WEBSOCKETS
+
+FastAPI deberá proporcionar comunicación en tiempo real.
+
+Eventos mínimos:
+
+```text
+order.created
+command.created
+order.updated
+order_item.updated
+order_item.ready
+order.ready
+order.paid
+availability.changed
+shift.closed
+```
+
+Los eventos deben incluir únicamente la información necesaria.
+
+---
+
+# 17. RECUPERACIÓN DESPUÉS DE DESCONEXIÓN
+
+WebSocket NO será la fuente de verdad.
+
+Cuando un cliente:
+
+- abra la aplicación;
+- recupere conexión;
+- reconecte WebSocket;
+
+debe realizar una sincronización REST.
+
+Ejemplo cocina:
+
+```text
+GET /api/orders/active?area=KITCHEN
+```
+
+Así ningún pedido se pierde porque un evento WebSocket no haya llegado.
+
+---
+
+# 18. OFFLINE V1
+
+La V1 tendrá soporte experimental offline.
+
+Objetivo:
+
+permitir guardar acciones cuando la conexión desaparezca y reintentarlas posteriormente.
+
+Tecnologías:
+
+```text
+Service Worker
+IndexedDB
+Sync Queue propia
+```
+
+Background Sync puede utilizarse únicamente como complemento.
+
+NO depender exclusivamente de Background Sync.
+
+---
+
+# 19. ESTADOS DE SINCRONIZACIÓN
+
+Estados locales:
+
+```text
+LOCAL_PENDING
+SENDING
+SYNCED
+SYNC_ERROR
+```
+
+Ejemplo UI:
+
+```text
+🟠 Pendiente de envío
+
+🔵 Enviando
+
+🟢 Recibido por servidor
+
+🔴 Error de sincronización
+```
+
+Es extremadamente importante diferenciar:
+
+```text
+GUARDADO LOCALMENTE
+```
+
+de:
+
+```text
+RECIBIDO POR COCINA
+```
+
+Nunca mostrar que cocina recibió algo hasta obtener confirmación del backend.
+
+---
+
+# 20. COLA OFFLINE
+
+Crear almacenamiento IndexedDB para operaciones pendientes.
+
+Modelo conceptual:
+
+```text
+client_operation_id
+operation_type
+resource_id
+payload
+created_at
+attempt_count
+last_attempt_at
+status
+last_error
+```
+
+Operaciones iniciales que deben soportar cola:
+
+```text
+CREATE_ORDER
+CREATE_COMMAND
+ADD_ORDER_ITEM
+CANCEL_ORDER_ITEM
+UPDATE_ORDER_ITEM_STATUS
+REGISTER_EXPENSE
+```
+
+---
+
+# 21. REINTENTOS
+
+Intentar sincronización:
+
+- inmediatamente;
+- al detectar conexión;
+- al abrir la PWA;
+- al volver la aplicación al foreground;
+- periódicamente mientras existan operaciones pendientes;
+- mediante Background Sync cuando esté disponible.
+
+Implementar backoff.
+
+Ejemplo:
+
+```text
+2 s
+5 s
+10 s
+30 s
+60 s
+```
+
+No realizar loops agresivos.
+
+---
+
+# 22. IDEMPOTENCIA
+
+Es requisito crítico.
+
+Un pedido nunca puede duplicarse porque el cliente reintentó una petición.
+
+Cada operación offline debe generar antes de enviarse:
+
+```text
+client_operation_id = UUID
+```
+
+El backend debe guardar operaciones procesadas.
+
+Tabla sugerida:
+
+```text
+idempotency_keys
+
+id
+key UUID UNIQUE
+user_id
+operation_type
+created_at
+response_status
+response_body JSONB
+```
+
+Si el mismo `client_operation_id` llega nuevamente:
+
+NO ejecutar nuevamente la operación.
+
+Retornar el resultado previo.
+
+---
+
+# 23. RESOLUCIÓN DE CONFLICTOS V1
+
+Mantener reglas simples.
+
+El servidor será la fuente de verdad.
+
+Si una operación no puede aplicarse porque el recurso cambió:
+
+devolver:
+
+```text
+409 CONFLICT
+```
+
+La PWA debe marcar:
+
+```text
+SYNC_ERROR
+```
+
+y mostrar al usuario que requiere revisión.
+
+NO sobrescribir silenciosamente información.
+
+---
+
+# 24. CARTA
+
+El restaurante ya dispone de carta.
+
+Crear estructura administrativa que permita cargarla.
+
+Entidades:
+
+```text
+menu_categories
+menu_items
+```
+
+Producto:
+
+```text
+id
+category_id
+name
+description
+price
+preparation_area
+expected_prep_minutes
+is_available
+is_active
+created_at
+updated_at
+```
+
+ADMIN administra:
+
+- nombre;
+- descripción;
+- precio;
+- categoría;
+- área;
+- tiempo esperado;
+- activación.
+
+COCINA controla:
+
+```text
+is_available
+```
+
+para indicar agotado/disponible durante operación.
+
+---
+
+# 25. DISPONIBILIDAD
+
+Estados:
+
+```text
+AVAILABLE
+SOLD_OUT
+```
+
+Un plato agotado:
+
+- permanece visible;
+- no puede agregarse a nuevos pedidos;
+- debe visualizarse claramente como agotado.
+
+Cambios de disponibilidad deben propagarse en tiempo real.
+
+---
+
+# 26. SUSTITUCIONES
+
+Cuando un producto dentro de un combo necesite reemplazo:
+
+guardar el cambio.
+
+En V1:
+
+- mantener el mismo precio;
+- registrar descripción de sustitución;
+- conservar producto original.
+
+Ejemplo:
+
+```text
+Combo parrillero
+
+Original:
+Pollo
+
+Sustituido por:
+Deshuesado
+```
+
+Modelo inicial:
+
+```text
+replacement_description
+```
+
+No implementar motor complejo de ingredientes/composición todavía.
+
+---
+
+# 27. MESAS
+
+Entidad:
+
+```text
+restaurant_tables
+
+id
+name
+number
+is_active
+created_at
+```
+
+Ejemplo:
+
+```text
+Mesa 1
+Mesa 2
+Mesa 3
+```
+
+El sistema debe permitir administrar mesas sin modificar código.
+
+---
+
+# 28. ATENCIÓN EN MESA
+
+Para pedidos `DINE_IN`:
+
+`persons_count` es obligatorio.
+
+Una mesa puede recibir múltiples comandas dentro del mismo pedido abierto.
+
+No crear un pedido independiente cada vez que el cliente agrega algo.
+
+---
+
+# 29. PAGO
+
+NO implementar pasarelas.
+
+NO conectar APIs de:
+
+- Yape;
+- Plin;
+- Visa;
+- Mastercard.
+
+El pago será registrado manualmente.
+
+Métodos:
+
+```text
+CASH
+YAPE
+PLIN
+CARD
+OTHER
+```
+
+El sistema únicamente registra que el pago ocurrió.
+
+---
+
+# 30. DIVISIÓN DE CUENTA
+
+Debe entrar en V1.
+
+Permitir:
+
+## Por productos
+
+Ejemplo:
+
+```text
+Persona A:
+1 parrilla
+1 gaseosa
+
+Persona B:
+1 pollo
+```
+
+## Por persona / monto
+
+Permitir crear partes independientes del total.
+
+La suma de divisiones no puede exceder el total pendiente.
+
+Un pedido estará `PAID` solamente cuando:
+
+```text
+total_pagado >= total_pedido
+```
+
+---
+
+# 31. MODELO DE PAGOS
+
+Tabla sugerida:
+
+```text
+payments
+
+id
+order_id
+split_id nullable
+method
+amount
+created_by_user_id
+paid_at
+created_at
+```
+
+No almacenar información bancaria sensible.
+
+---
+
+# 32. GASTOS
+
+Usuarios autorizados pueden registrar gastos sin aprobación previa.
+
+Campos:
+
+```text
+id
+shift_id
+created_by_user_id
+amount
+description
+receipt_url nullable
+created_at
+```
+
+El comprobante es opcional.
+
+No implementar flujo de aprobación.
+
+---
+
+# 33. COMPROBANTES
+
+Utilizar:
+
+`Supabase Storage`
+
+No almacenar imágenes como blobs dentro de PostgreSQL.
+
+Guardar únicamente:
+
+```text
+receipt_url
+```
+
+Validar:
+
+- tipo MIME;
+- extensión;
+- tamaño máximo;
+- usuario autenticado.
+
+Aceptar inicialmente:
+
+```text
+JPG
+JPEG
+PNG
+WEBP
+PDF
+```
+
+---
+
+# 34. LISTA DE COMPRAS
+
+No implementar inventario.
+
+Sí implementar lista manual para el día siguiente.
+
+Tabla:
+
+```text
+purchase_list_items
+
+id
+shift_id
+area
+description
+quantity_text nullable
+created_by_user_id
+created_at
+```
+
+Ejemplo:
+
+```text
+KITCHEN
+"Comprar 10 kg de papa"
+
+GRILL
+"Comprar carbón"
+```
+
+ADMIN puede consultar la lista completa.
+
+---
+
+# 35. TURNOS
+
+En V1 existe un turno principal por día.
+
+Entidad:
+
+```text
+shifts
+
+id
+opened_at
+opened_by
+closed_at nullable
+closed_by nullable
+status
+snapshot JSONB nullable
+```
+
+Estados:
+
+```text
+OPEN
+CLOSED
+```
+
+---
+
+# 36. CIERRE DE TURNO
+
+Debe realizarse manualmente:
+
+```text
+CERRAR TURNO
+```
+
+Solo ADMIN.
+
+Al cerrar:
+
+1. calcular estadísticas;
+2. almacenar snapshot;
+3. marcar turno CLOSED;
+4. impedir modificaciones normales.
+
+Snapshot mínimo:
+
+```text
+total_sales
+total_expenses
+net_result
+orders_count
+tables_served
+persons_served
+items_sold
+sales_by_waiter
+sales_by_payment_method
+preparation_metrics
+purchase_list
+closed_at
+```
+
+---
+
+# 37. MODIFICACIÓN DE TURNOS CERRADOS
+
+Por defecto:
+
+NO modificar.
+
+Si posteriormente se necesita corrección administrativa, deberá diseñarse como operación especial con auditoría.
+
+No incluir edición libre de turnos cerrados en V1.
+
+---
+
+# 38. HISTORIAL
+
+Solo ADMIN.
+
+Permitir filtrar por:
+
+```text
+fecha
+turno
+mesero
+```
+
+Consultar:
+
+- pedidos;
+- ventas;
+- gastos;
+- platos vendidos;
+- pagos;
+- tiempos;
+- mesas;
+- personas atendidas.
+
+---
+
+# 39. REPORTES V1
+
+ADMIN deberá poder consultar:
+
+## Ventas
+
+- total del turno;
+- cantidad de pedidos;
+- cantidad de mesas;
+- cantidad de personas;
+- ventas por mesero;
+- ventas por método de pago.
+
+## Productos
+
+- platos vendidos;
+- cantidades;
+- ranking por cantidad.
+
+## Gastos
+
+- total;
+- listado;
+- usuario;
+- comprobante.
+
+## Operación
+
+- tiempo promedio de preparación;
+- tiempo promedio por área;
+- tiempo promedio por producto;
+- porcentaje dentro del tiempo esperado cuando esté configurado.
+
+## Resultado
+
+```text
+resultado_operativo = ventas - gastos
+```
+
+No denominarlo utilidad contable oficial.
+
+---
+
+# 40. AUDITORÍA
+
+Implementar desde V1.
+
+Tabla:
+
+```text
+audit_logs
+
+id
+user_id
+action
+entity_type
+entity_id
+before_data JSONB nullable
+after_data JSONB nullable
+created_at
+device_id nullable
+```
+
+Registrar al menos:
+
+```text
+LOGIN
+ORDER_CREATED
+COMMAND_CREATED
+ITEM_ADDED
+ITEM_CANCELLED
+ITEM_STATUS_CHANGED
+EXPENSE_CREATED
+PAYMENT_REGISTERED
+MENU_PRICE_CHANGED
+AVAILABILITY_CHANGED
+SHIFT_CLOSED
+```
+
+---
+
+# 41. MODELO DE DATOS INICIAL
+
+Crear migraciones para:
+
+```text
+users
+restaurant_tables
+menu_categories
+menu_items
+shifts
+orders
+commands
+order_items
+payments
+bill_splits
+bill_split_items
+expenses
+purchase_list_items
+push_subscriptions
+idempotency_keys
+audit_logs
+```
+
+Usar UUID como identificadores principales.
+
+---
+
+# 42. USERS
+
+Campos sugeridos:
+
+```text
+id UUID PK
+
+username VARCHAR UNIQUE
+
+pin_hash TEXT
+
+display_name VARCHAR
+
+role ENUM:
+WAITER
+KITCHEN
+GRILL
+ADMIN
+
+is_active BOOLEAN
+
+created_at
+updated_at
+```
+
+---
+
+# 43. ORDERS
+
+```text
+id UUID PK
+
+shift_id UUID FK
+
+table_id UUID nullable
+
+order_type ENUM:
+DINE_IN
+TAKEAWAY
+DELIVERY
+
+persons_count INTEGER nullable
+
+created_by_waiter_id UUID FK
+
+status
+
+notes TEXT nullable
+
+subtotal DECIMAL
+
+total DECIMAL
+
+paid_amount DECIMAL
+
+opened_at
+
+paid_at nullable
+
+closed_at nullable
+
+created_at
+
+updated_at
+```
+
+Para `DINE_IN`:
+
+```text
+table_id NOT NULL
+persons_count > 0
+```
+
+---
+
+# 44. COMMANDS
+
+```text
+id UUID PK
+
+order_id UUID FK
+
+sequence_number INTEGER
+
+created_by_user_id UUID
+
+client_operation_id UUID UNIQUE
+
+notes TEXT nullable
+
+created_at
+```
+
+Unique recomendado:
+
+```text
+(order_id, sequence_number)
+```
+
+---
+
+# 45. ORDER_ITEMS
+
+```text
+id UUID PK
+
+command_id UUID FK
+
+order_id UUID FK
+
+menu_item_id UUID FK
+
+menu_item_name_snapshot VARCHAR
+
+unit_price_snapshot DECIMAL
+
+quantity INTEGER
+
+preparation_area
+
+status
+
+notes TEXT nullable
+
+replacement_description TEXT nullable
+
+expected_prep_minutes_snapshot INTEGER nullable
+
+preparation_started_at nullable
+
+ready_at nullable
+
+delivered_at nullable
+
+cancelled_at nullable
+
+cancelled_by nullable
+
+cancelled_after_preparation_started BOOLEAN
+
+cancellation_reason TEXT nullable
+
+created_at
+
+updated_at
+```
+
+Guardar snapshot de nombre/precio/tiempo.
+
+Nunca depender del precio actual de `menu_items` para reconstruir una venta antigua.
+
+---
+
+# 46. API REST
+
+Prefijo:
+
+```text
+/api/v1
+```
+
+---
+
+# 47. AUTH
+
+```text
+POST /auth/login
+POST /auth/logout
+POST /auth/refresh
+GET  /auth/me
+```
+
+---
+
+# 48. USERS
+
+ADMIN:
+
+```text
+GET    /users
+POST   /users
+PATCH  /users/{id}
+POST   /users/{id}/disable
+```
+
+---
+
+# 49. MESAS
+
+```text
+GET    /tables
+POST   /tables
+PATCH  /tables/{id}
+```
+
+POST/PATCH restringido a ADMIN.
+
+---
+
+# 50. CARTA
+
+```text
+GET    /menu
+GET    /menu/categories
+
+POST   /menu/categories
+PATCH  /menu/categories/{id}
+
+POST   /menu/items
+PATCH  /menu/items/{id}
+```
+
+Disponibilidad:
+
+```text
+PATCH /menu/items/{id}/availability
+```
+
+---
+
+# 51. PEDIDOS
+
+```text
+GET  /orders/active
+
+POST /orders
+
+GET  /orders/{id}
+
+POST /orders/{id}/commands
+
+POST /orders/{id}/items
+
+PATCH /orders/{id}/items/{item_id}
+
+POST /orders/{id}/items/{item_id}/cancel
+
+POST /orders/{id}/items/{item_id}/status
+```
+
+---
+
+# 52. VISTAS DE PREPARACIÓN
+
+```text
+GET /preparation/kitchen
+GET /preparation/grill
+```
+
+Retornar únicamente información necesaria para el área.
+
+---
+
+# 53. PAGOS
+
+```text
+GET  /orders/{id}/billing
+
+POST /orders/{id}/splits
+
+POST /orders/{id}/payments
+
+GET  /orders/{id}/payments
+```
+
+---
+
+# 54. GASTOS
+
+```text
+GET  /expenses/current-shift
+POST /expenses
+GET  /expenses/{id}
+```
+
+ADMIN puede consultar históricos.
+
+---
+
+# 55. LISTA DE COMPRAS
+
+```text
+GET  /purchase-list/current
+POST /purchase-list
+DELETE /purchase-list/{id}
+```
+
+---
+
+# 56. TURNOS
+
+```text
+GET  /shifts/current
+
+POST /shifts/open
+
+POST /shifts/{id}/close
+
+GET  /shifts/history
+
+GET  /shifts/{id}/report
+```
+
+Historial restringido a ADMIN.
+
+---
+
+# 57. REPORTES
+
+```text
+GET /reports/current-shift
+
+GET /reports/shifts/{id}
+
+GET /reports/sales
+
+GET /reports/products
+
+GET /reports/preparation
+```
+
+ADMIN.
+
+---
+
+# 58. WEBSOCKET
+
+Endpoint sugerido:
+
+```text
+/ws
+```
+
+Después de autenticación, asociar conexión con:
+
+```text
+user_id
+role
+device_id
+```
+
+Permitir canales lógicos:
+
+```text
+waiters
+kitchen
+grill
+admin
+```
+
+No confiar en el canal solicitado por el frontend.
+
+Resolver permisos desde usuario autenticado.
+
+---
+
+# 59. FRONTEND
+
+Estructura sugerida:
+
+```text
+src/
+
+api/
+auth/
+components/
+features/
+hooks/
+layouts/
+lib/
+offline/
+pages/
+pwa/
+router/
+stores/
+types/
+utils/
+websocket/
+```
+
+Features:
+
+```text
+auth
+tables
+orders
+kitchen
+grill
+billing
+expenses
+purchases
+shifts
+reports
+admin
+```
+
+---
+
+# 60. ESTADO FRONTEND
+
+Evitar estado global innecesario.
+
+Se puede utilizar:
+
+```text
+TanStack Query
+```
+
+para datos de servidor.
+
+Store ligero para:
+
+- sesión visual;
+- conexión;
+- cola offline;
+- notificaciones;
+- configuración del dispositivo.
+
+---
+
+# 61. PANTALLA MESERO
+
+Debe priorizar velocidad.
+
+Flujo:
+
+```text
+Mesas
+ ↓
+Abrir mesa
+ ↓
+Cantidad de personas
+ ↓
+Carta
+ ↓
+Agregar productos
+ ↓
+Observaciones
+ ↓
+Enviar comanda
+ ↓
+Confirmación
+```
+
+Evitar formularios largos.
+
+La acción principal debe poder realizarse con pocos toques.
+
+---
+
+# 62. PANTALLA COCINA
+
+Diseño tipo tablero.
+
+Cada tarjeta:
+
+```text
+Mesa 4
+
+Comanda #2
+20:35
+
+2 × Pollo
+1 × Papa
+1 × Ensalada
+
+Tiempo: 08:21
+
+[EMPEZAR]
+
+[LISTO]
+```
+
+Orden cronológico.
+
+Debe poder utilizarse fácilmente con pantalla táctil.
+
+---
+
+# 63. PANTALLA PARRILLA
+
+Similar a cocina pero filtrada por:
+
+```text
+preparation_area = GRILL
+```
+
+Mostrar claramente:
+
+- mesa;
+- plato;
+- cantidad;
+- observaciones;
+- término de carne;
+- tiempo transcurrido.
+
+---
+
+# 64. PANTALLA ADMIN
+
+Dashboard inicial:
+
+```text
+Ventas del turno
+
+Gastos
+
+Resultado operativo
+
+Mesas atendidas
+
+Personas atendidas
+
+Pedidos activos
+
+Platos vendidos
+
+Tiempo promedio
+
+Lista de compras
+```
+
+No sobrecargar V1 con gráficos innecesarios.
+
+Priorizar información clara.
+
+---
+
+# 65. RESPONSIVE
+
+Mobile-first.
+
+Resoluciones prioritarias:
+
+```text
+360px+
+390px+
+430px+
+tablet
+desktop
+```
+
+Botones operativos grandes.
+
+Evitar hover como interacción obligatoria.
+
+---
+
+# 66. SEGURIDAD BACKEND
+
+Implementar:
+
+- validación Pydantic;
+- RBAC;
+- Argon2id;
+- rate limiting;
+- CORS restringido;
+- headers de seguridad;
+- validación MIME;
+- límites de archivos;
+- sanitización de inputs;
+- queries ORM parametrizadas;
+- auditoría;
+- logs sin credenciales;
+- secretos por variables de entorno.
+
+Nunca enviar:
+
+- PIN;
+- hash;
+- secretos;
+- tokens internos;
+
+en logs.
+
+---
+
+# 67. BASE DE DATOS
+
+Usar:
+
+```text
+PostgreSQL
+```
+
+ORM recomendado:
+
+```text
+SQLAlchemy 2.x
+```
+
+Migraciones:
+
+```text
+Alembic
+```
+
+No usar `create_all()` como mecanismo de producción.
+
+---
+
+# 68. TRANSACCIONES
+
+Operaciones críticas deben ser transaccionales.
+
+Ejemplo al crear comanda:
+
+```text
+BEGIN
+
+crear command
+crear items
+crear audit log
+registrar idempotency key
+
+COMMIT
+```
+
+Si algo falla:
+
+```text
+ROLLBACK
+```
+
+---
+
+# 69. DINERO
+
+Nunca usar float.
+
+Usar:
+
+```text
+Decimal
+```
+
+PostgreSQL:
+
+```text
+NUMERIC(12,2)
+```
+
+---
+
+# 70. FECHAS
+
+Guardar todas las fechas en UTC.
+
+Convertir a hora local únicamente para presentación.
+
+Zona del negocio:
+
+```text
+America/Lima
+```
+
+---
+
+# 71. TESTS BACKEND
+
+Usar pytest.
+
+Cobertura mínima en:
+
+- autenticación;
+- permisos;
+- creación de pedido;
+- creación de comandas;
+- distribución por área;
+- estados;
+- cancelación;
+- idempotencia;
+- pagos;
+- división;
+- gastos;
+- turnos;
+- reportes;
+- cierre de turno.
+
+---
+
+# 72. TESTS FRONTEND
+
+Cubrir:
+
+- login;
+- creación pedido;
+- selección de productos;
+- envío;
+- estados offline;
+- cola de sincronización;
+- cocina;
+- parrilla;
+- división;
+- gastos;
+- cierre.
+
+---
+
+# 73. E2E
+
+Implementar pruebas E2E para el flujo principal.
+
+Escenario obligatorio:
+
+```text
+ADMIN abre turno
+
+MESERO abre Mesa 4
+
+registra 3 personas
+
+agrega:
+- producto cocina
+- producto parrilla
+- bebida
+
+envía comanda
+
+COCINA recibe su parte
+
+PARRILLA recibe su parte
+
+ambos comienzan preparación
+
+ambos marcan READY
+
+MESERO recibe aviso
+
+MESERO marca entrega
+
+ADMIN divide cuenta
+
+ADMIN registra pago
+
+pedido queda PAID
+
+ADMIN cierra turno
+
+reporte contiene la venta
+```
+
+---
+
+# 74. E2E OFFLINE
+
+Escenario obligatorio:
+
+```text
+MESERO pierde conexión
+
+crea comanda
+
+comanda queda LOCAL_PENDING
+
+recupera conexión
+
+sync queue reintenta
+
+backend crea exactamente una comanda
+
+cocina recibe exactamente una comanda
+
+estado local pasa a SYNCED
+```
+
+Repetir intencionalmente la misma operación para comprobar idempotencia.
+
+Resultado:
+
+```text
+1 operación cliente
+=
+1 operación servidor
+```
+
+Nunca duplicados.
+
+---
+
+# 75. MANEJO DE ERRORES
+
+Formato API consistente:
+
+```json
+{
+  "error": {
+    "code": "ORDER_ALREADY_CLOSED",
+    "message": "El pedido ya está cerrado.",
+    "details": {}
+  }
+}
+```
+
+No retornar stack traces al cliente.
+
+---
+
+# 76. LOGGING
+
+Registrar:
+
+```text
+request_id
+user_id
+route
+status_code
+duration
+```
+
+No registrar información sensible.
+
+Generar `request_id` para rastreo.
+
+---
+
+# 77. VARIABLES DE ENTORNO
+
+Ejemplo:
+
+```text
+DATABASE_URL=
+
+JWT_SECRET=
+
+SUPABASE_URL=
+
+SUPABASE_SERVICE_KEY=
+
+SUPABASE_STORAGE_BUCKET=
+
+FRONTEND_URL=
+
+ENVIRONMENT=
+
+LOG_LEVEL=
+```
+
+Crear:
+
+```text
+.env.example
+```
+
+Nunca subir `.env`.
+
+---
+
+# 78. DESPLIEGUE PILOTO
+
+Backend:
+
+```text
+Render
+```
+
+PostgreSQL:
+
+```text
+Supabase
+```
+
+Storage:
+
+```text
+Supabase Storage
+```
+
+Frontend:
+
+puede desplegarse inicialmente mediante Render Static Site u otro hosting estático compatible.
+
+Usar URL temporal/subdominio durante fase piloto.
+
+No comprar infraestructura adicional hasta validar el sistema.
+
+---
+
+# 79. BACKUPS
+
+Configurar backup semanal durante piloto.
+
+Documentar procedimiento de restauración.
+
+Antes de pasar a producción real evaluar backup diario.
+
+---
+
+# 80. ENTORNOS
+
+V1:
+
+```text
+development
+production-pilot
+```
+
+No se requiere staging independiente inicialmente.
+
+---
+
+# 81. GIT
+
+Trabajar con commits pequeños.
+
+Formato recomendado:
+
+```text
+feat:
+fix:
+test:
+refactor:
+docs:
+chore:
+```
+
+No realizar commits masivos sin descripción.
+
+---
+
+# 82. DOCUMENTACIÓN
+
+Mantener:
+
+```text
+README.md
+
+docs/
+  architecture.md
+  api.md
+  offline-sync.md
+  database.md
+  deployment.md
+  testing.md
+```
+
+README debe explicar desde cero cómo levantar:
+
+- frontend;
+- backend;
+- PostgreSQL;
+- migraciones;
+- tests.
+
+---
+
+# 83. FASES DE DESARROLLO
+
+OpenCode deberá desarrollar en este orden.
+
+## FASE 1 — Base del proyecto
+
+- frontend React/TS/Vite;
+- backend FastAPI;
+- PostgreSQL;
+- SQLAlchemy;
+- Alembic;
+- configuración;
+- Docker opcional para desarrollo;
+- lint;
+- tests base.
+
+## FASE 2 — Autenticación y roles
+
+- usuarios;
+- PIN;
+- login;
+- sesiones;
+- RBAC;
+- cuentas iniciales.
+
+## FASE 3 — Carta y mesas
+
+- categorías;
+- productos;
+- mesas;
+- disponibilidad;
+- áreas de preparación.
+
+## FASE 4 — Pedidos y comandas
+
+- abrir pedido;
+- personas;
+- agregar items;
+- crear comandas;
+- distribución automática;
+- snapshots;
+- cancelaciones;
+- sustituciones.
+
+## FASE 5 — Cocina y parrilla
+
+- vistas operativas;
+- estados;
+- timers;
+- coordinación;
+- WebSocket;
+- avisos.
+
+## FASE 6 — Offline
+
+- Service Worker;
+- IndexedDB;
+- sync queue;
+- idempotencia;
+- reconexión;
+- conflictos;
+- UI de sincronización.
+
+## FASE 7 — Cobros
+
+- división;
+- registro manual;
+- métodos;
+- estado pagado.
+
+## FASE 8 — Gastos y compras
+
+- gastos;
+- comprobantes;
+- Supabase Storage;
+- lista manual de compras.
+
+## FASE 9 — Turnos y reportes
+
+- apertura;
+- cierre;
+- snapshot;
+- dashboard;
+- historial admin;
+- métricas.
+
+## FASE 10 — PWA y piloto
+
+- manifest;
+- instalación;
+- iconos;
+- cache;
+- push;
+- responsive;
+- E2E;
+- deployment;
+- documentación.
+
+---
+
+# 84. REGLA DE CALIDAD POR FASE
+
+OpenCode NO debe considerar una fase terminada únicamente porque compile.
+
+Para cada fase:
+
+```text
+IMPLEMENTAR
+↓
+LINT
+↓
+TYPECHECK
+↓
+TESTS
+↓
+SMOKE TEST
+↓
+DOCUMENTAR
+↓
+RECIÉN MARCAR COMPLETADA
+```
+
+No ignorar tests fallidos.
+
+No comentar tests para hacerlos pasar.
+
+No eliminar validaciones para solucionar temporalmente errores.
+
+---
+
+# 85. CRITERIOS DE ACEPTACIÓN DEL PILOTO
+
+La V1 estará lista para probar en restaurante cuando:
+
+1. Un mesero pueda iniciar sesión.
+
+2. Pueda abrir una mesa.
+
+3. Deba registrar cantidad de personas.
+
+4. Pueda seleccionar productos.
+
+5. Pueda enviar una comanda.
+
+6. Cocina reciba automáticamente sus items.
+
+7. Parrilla reciba automáticamente sus items.
+
+8. Las áreas puedan cambiar estados.
+
+9. El mesero reciba aviso cuando el pedido esté listo.
+
+10. Pueda agregarse una nueva comanda a la misma mesa.
+
+11. Pueda cancelarse un item y quedar auditado.
+
+12. Pueda marcarse un plato agotado.
+
+13. Pueda registrarse un gasto.
+
+14. Pueda adjuntarse comprobante.
+
+15. El dueño pueda registrar pagos.
+
+16. Pueda dividirse la cuenta.
+
+17. El pedido pueda quedar pagado.
+
+18. El administrador pueda cerrar turno.
+
+19. Se genere reporte del turno.
+
+20. El administrador pueda consultar historial.
+
+21. Una pérdida temporal de Internet no borre una comanda.
+
+22. Una operación reintentada no cree duplicados.
+
+23. Cocina pueda recuperar pedidos pendientes después de reconectarse.
+
+24. La aplicación sea instalable como PWA.
+
+25. Funcione correctamente en vista móvil.
+
+---
+
+# 86. RESTRICCIÓN CONOCIDA DEL OFFLINE
+
+La V1 NO puede garantizar transmisión entre dos dispositivos completamente desconectados de Internet.
+
+Ejemplo:
+
+```text
+Mesero con conexión → servidor ✅
+
+Cocina sin conexión → no recibe todavía ❌
+```
+
+Cuando cocina recupere conexión:
+
+```text
+REST resync
++
+WebSocket reconnect
+```
+
+deberá recuperar todos los pedidos pendientes.
+
+Este comportamiento es esperado en la V1.
+
+No implementar SMS ni comunicación peer-to-peer.
+
+---
+
+# 87. DECISIÓN PARA EL PILOTO
+
+Primero validar:
+
+```text
+PWA
++
+Cloud
++
+offline queue
++
+retry
++
+idempotency
+```
+
+Si la conectividad real del restaurante hace inviable esta arquitectura, se evaluará posteriormente:
+
+```text
+Wi-Fi local
++
+servidor/gateway local
++
+sincronización con cloud
+```
+
+Esto queda fuera de la V1.
+
+---
+
+# 88. PRIORIDAD DEL SISTEMA
+
+Ante conflicto entre funcionalidades, priorizar en este orden:
+
+```text
+1. No perder pedidos
+2. No duplicar pedidos
+3. Cocina/parrilla reciben información correcta
+4. Estados correctos
+5. Velocidad de uso
+6. Auditoría
+7. Reportes
+8. Apariencia
+```
+
+La estética nunca debe comprometer confiabilidad operacional.
+
+---
+
+# 89. DEFINICIÓN DE MVP V1
+
+El MVP incluye:
+
+```text
+Autenticación
+Roles
+Mesas
+Carta
+Disponibilidad
+Pedidos
+Comandas
+Cocina
+Parrilla
+Estados
+Tiempo real
+Offline/reintentos
+Notificaciones
+Cancelaciones
+Sustituciones
+Pago manual
+División de cuenta
+Gastos
+Comprobantes
+Lista de compras
+Turnos
+Reportes
+Historial admin
+Auditoría
+PWA
+```
+
+No ampliar alcance sin aprobación explícita.
+
+---
+
+# 90. INSTRUCCIÓN FINAL PARA OPENCODE
+
+Esta especificación es la fuente principal de verdad para la V1.
+
+Antes de implementar:
+
+1. analizar requisitos;
+2. crear arquitectura;
+3. crear modelo de datos;
+4. crear plan de fases;
+5. detectar contradicciones;
+6. registrar decisiones técnicas.
+
+Después comenzar por FASE 1.
+
+No inventar requisitos.
+
+No implementar funcionalidades futuras.
+
+Si existe una ambigüedad menor, elegir la solución más simple que mantenga extensibilidad y documentarla.
+
+Si una decisión puede cambiar el comportamiento funcional del restaurante, marcarla como:
+
+```text
+DECISION_REQUIRED
+```
+
+en lugar de asumirla silenciosamente.
+
+El objetivo de esta V1 no es construir un ERP completo.
+
+El objetivo es validar en un restaurante real que el flujo:
+
+```text
+MESERO
+   ↓
+COMANDA
+   ↓
+COCINA / PARRILLA
+   ↓
+LISTO
+   ↓
+ENTREGA
+   ↓
+PAGO
+   ↓
+CIERRE DE TURNO
+```
+
+sea rápido, confiable y superior al proceso actual en papel.

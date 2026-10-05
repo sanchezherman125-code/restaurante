@@ -76,8 +76,12 @@ export const ordersApi = {
     api.patch<Order>(`${V1}/orders/${orderId}/items/${itemId}`, body),
   cancelItem: (orderId: string, itemId: string, reason?: string) =>
     api.post<Order>(`${V1}/orders/${orderId}/items/${itemId}/cancel`, { reason }),
-  setItemStatus: (orderId: string, itemId: string, status: string) =>
-    api.post<Order>(`${V1}/orders/${orderId}/items/${itemId}/status`, { status }),
+  setItemStatus: (orderId: string, itemId: string, status: string, clientOperationId?: string) =>
+    api.post<Order>(
+      `${V1}/orders/${orderId}/items/${itemId}/status`,
+      { status, ...(clientOperationId ? { client_operation_id: clientOperationId } : {}) },
+      { idempotencyKey: clientOperationId },
+    ),
 };
 
 export const preparationApi = {

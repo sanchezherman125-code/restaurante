@@ -281,38 +281,42 @@ def cancel_item(
     return OrderOut.model_validate(order)
 
 
-@router.post("/{order_id}/items/{item_id}/status", response_model=OrderOut)
+@router.post("/{order_id}/items/{item_id}/status")
 def change_status(
     order_id: UUID,
     item_id: UUID,
     payload: ItemStatusRequest,
     db: DbSession,
     user: CurrentUser,
+    idem_key: IdempotencyKeyHeader = None,
     device_id: Annotated[str | None, Header(alias="X-Device-Id")] = None,
-) -> OrderOut:
+) -> JSONResponse:
     order = order_service.get_active_order(db, order_id)
     item = db.get(OrderItem, item_id)
     if item is None or item.order_id != order.id:
         raise NotFoundError("ITEM_NOT_FOUND", "Producto no encontrado en este pedido.")
 
-    ensure_order_in_open_shift(db, order.shift_id)
+    key = payload.client_operation_id or idem_key
 
-    _authorize_status_change(user, item, payload.status)
+    def operation() -> tuple[int, dict]:
+        ensure_order_in_open_shift(db, order.shift_id)
+        _authorize_status_change(user, item, payload.status)
+        before = {"status": item.status}
+        order_service.change_item_status(db, user, item, payload.status)
+        audit_actions.audit(
+            db,
+            user_id=user.id,
+            action=audit_actions.ITEM_STATUS_CHANGED,
+            entity_type="order_items",
+            entity_id=item.id,
+            before_data=before,
+            after_data={"status": item.status},
+            device_id=device_id,
+        )
+        return 200, OrderOut.model_validate(order).model_dump(mode="json")
 
-    before = {"status": item.status}
-    order_service.change_item_status(db, user, item, payload.status)
-    audit_actions.audit(
-        db,
-        user_id=user.id,
-        action=audit_actions.ITEM_STATUS_CHANGED,
-        entity_type="order_items",
-        entity_id=item.id,
-        before_data=before,
-        after_data={"status": item.status},
-        device_id=device_id,
-    )
-    db.commit()
-    return OrderOut.model_validate(order)
+    status, body = execute_idempotent(db, key, user.id, "UPDATE_ORDER_ITEM_STATUS", operation)
+    return JSONResponse(status_code=status, content=body)
 
 
 def _authorize_status_change(user: User, item: OrderItem, new_status: ItemStatus) -> None:

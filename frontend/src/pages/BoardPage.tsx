@@ -14,11 +14,13 @@ const AREA_LABEL: Record<string, string> = { KITCHEN: "Cocina", GRILL: "Parrilla
 function ItemLine({
   item,
   groupId,
+  updating,
   onStatus,
   onCancel,
 }: {
   item: OrderItem;
   groupId: string;
+  updating: boolean;
   onStatus: (item: OrderItem, status: string) => void;
   onCancel: (item: OrderItem) => void;
 }) {
@@ -43,17 +45,17 @@ function ItemLine({
         </div>
         <div className="row wrap" style={{ marginTop: 8 }}>
           {item.status === "PENDING" ? (
-            <button className="btn small" onClick={() => onStatus(item, "PREPARING")}>
+            <button className="btn small" disabled={updating} onClick={() => onStatus(item, "PREPARING")}>
               ▶ Empezar
             </button>
           ) : null}
           {item.status === "PREPARING" ? (
-            <button className="btn success small" onClick={() => onStatus(item, "READY")}>
+            <button className="btn success small" disabled={updating} onClick={() => onStatus(item, "READY")}>
               ✓ Listo
             </button>
           ) : null}
           {item.status === "PENDING" || item.status === "PREPARING" ? (
-            <button className="btn ghost small" onClick={() => onCancel(item)}>
+            <button className="btn ghost small" disabled={updating} onClick={() => onCancel(item)}>
               Cancelar
             </button>
           ) : null}
@@ -68,6 +70,7 @@ function Board({ area }: { area: string }) {
   const toast = useUi((state) => state.toast);
   const [cancelTarget, setCancelTarget] = useState<OrderItem | null>(null);
   const [soldOutOpen, setSoldOutOpen] = useState(false);
+  const [updatingItems, setUpdatingItems] = useState<Record<string, string>>({});
 
   const key = area === "GRILL" ? "grill" : "kitchen";
   const groups = useQuery({
@@ -78,6 +81,10 @@ function Board({ area }: { area: string }) {
   });
 
   async function changeStatus(item: OrderItem, status: string) {
+    if (updatingItems[item.id] && updatingItems[item.id] !== item.status) return;
+    setUpdatingItems((current) => ({ ...current, [item.id]: status }));
+    let queued = false;
+    let completed = false;
     try {
       const outcome = await sendOrQueue(
         {
@@ -86,11 +93,21 @@ function Board({ area }: { area: string }) {
           method: "POST",
           body: { status },
         },
-        () => ordersApi.setItemStatus(item.order_id, item.id, status),
+        (clientOperationId) => ordersApi.setItemStatus(item.order_id, item.id, status, clientOperationId),
       );
-      if (!outcome.queued) void queryClient.invalidateQueries({ queryKey: ["preparation"] });
+      queued = outcome.queued;
+      completed = true;
+      if (!queued) void queryClient.invalidateQueries({ queryKey: ["preparation"] });
     } catch (error) {
       toast("error", "No se pudo actualizar", errorMessage(error));
+    } finally {
+      if (!queued && !completed) {
+        setUpdatingItems((current) => {
+          const next = { ...current };
+          delete next[item.id];
+          return next;
+        });
+      }
     }
   }
 
@@ -142,6 +159,7 @@ function Board({ area }: { area: string }) {
               group={group}
               onStatus={(item, status) => void changeStatus(item, status)}
               onCancel={(item) => setCancelTarget(item)}
+              updatingItems={updatingItems}
             />
           ))}
         </div>
@@ -167,10 +185,12 @@ function GroupCard({
   group,
   onStatus,
   onCancel,
+  updatingItems,
 }: {
   group: ItemGroup;
   onStatus: (item: OrderItem, status: string) => void;
   onCancel: (item: OrderItem) => void;
+  updatingItems: Record<string, string>;
 }) {
   const elapsed = useElapsed(group.created_at);
   const latenessInput = useMemo(
@@ -211,7 +231,14 @@ function GroupCard({
         {group.notes ? <div className="hint">🗒️ {group.notes}</div> : null}
         {group.command_notes ? <div className="hint">📝 {group.command_notes}</div> : null}
         {group.items.map((item) => (
-          <ItemLine key={item.id} item={item} groupId={group.command_id} onStatus={onStatus} onCancel={onCancel} />
+          <ItemLine
+            key={item.id}
+            item={item}
+            groupId={group.command_id}
+            updating={Boolean(updatingItems[item.id] && updatingItems[item.id] !== item.status)}
+            onStatus={onStatus}
+            onCancel={onCancel}
+          />
         ))}
       </div>
     </div>

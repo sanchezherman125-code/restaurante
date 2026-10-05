@@ -14,8 +14,7 @@ export interface NewOperation {
 
 let backoffMs = 0;
 let nextAllowedAttempt = 0;
-let flushing = false;
-const pendingFlush: (() => void)[] = [];
+let activeFlush: Promise<FlushResult> | null = null;
 
 export function getBackoffMs(): number {
   return backoffMs;
@@ -26,7 +25,7 @@ export function resetBackoff(): void {
   nextAllowedAttempt = 0;
 }
 
-export function createOperation(newOp: NewOperation): QueuedOperation {
+export function createOperation(newOp: NewOperation, status: QueuedOperation["status"] = "LOCAL_PENDING"): QueuedOperation {
   return {
     client_operation_id: crypto.randomUUID(),
     operation_type: newOp.operation_type,
@@ -37,13 +36,16 @@ export function createOperation(newOp: NewOperation): QueuedOperation {
     created_at: Date.now(),
     attempt_count: 0,
     last_attempt_at: null,
-    status: "LOCAL_PENDING",
+    status,
     last_error: null,
   };
 }
 
-export async function enqueue(newOp: NewOperation): Promise<QueuedOperation> {
-  const op = createOperation(newOp);
+export async function enqueue(
+  newOp: NewOperation,
+  status: QueuedOperation["status"] = "LOCAL_PENDING",
+): Promise<QueuedOperation> {
+  const op = createOperation(newOp, status);
   await putOperation(op);
   return op;
 }
@@ -83,15 +85,10 @@ function orderByDependencies(ops: QueuedOperation[]): QueuedOperation[] {
     .map((entry) => entry.op);
 }
 
-export async function flushQueue(): Promise<FlushResult> {
-  if (flushing) {
-    await new Promise<void>((resolve) => pendingFlush.push(resolve));
-  }
-  flushing = true;
+async function flushQueueImpl(): Promise<FlushResult> {
   const result: FlushResult = { synced: [], failed: [], deferred: [], networkFailure: false };
 
-  try {
-    if (Date.now() < nextAllowedAttempt) {
+  if (Date.now() < nextAllowedAttempt) {
       result.deferred = await listOperations();
       return result;
     }
@@ -195,12 +192,17 @@ export async function flushQueue(): Promise<FlushResult> {
 
     ops = await listOperations();
     result.deferred = ops.filter((op) => op.status === "LOCAL_PENDING");
-    return result;
-  } finally {
-    flushing = false;
-    const waiting = pendingFlush.splice(0, pendingFlush.length);
-    for (const resolve of waiting) resolve();
-  }
+  return result;
+}
+
+/** A single in-process flush owns LOCAL_PENDING operations. Operations already
+ * being sent directly stay SENDING and are intentionally skipped. */
+export function flushQueue(): Promise<FlushResult> {
+  if (activeFlush) return activeFlush;
+  activeFlush = flushQueueImpl().finally(() => {
+    activeFlush = null;
+  });
+  return activeFlush;
 }
 
 export async function retryOperation(id: string): Promise<void> {

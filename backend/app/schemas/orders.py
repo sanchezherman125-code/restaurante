@@ -56,6 +56,7 @@ class ItemCancelRequest(BaseModel):
 
 class ItemStatusRequest(BaseModel):
     status: ItemStatus
+    client_operation_id: UUID | None = None
 
 
 class OrderItemOut(BaseModel):

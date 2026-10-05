@@ -17,6 +17,10 @@ interface CartLine {
   notes: string;
 }
 
+function resolveMenuImageUrl(imageUrl: string): string {
+  return new URL(imageUrl, import.meta.env.VITE_API_URL || window.location.origin).toString();
+}
+
 function ItemRow({
   item,
   order,
@@ -176,7 +180,7 @@ export function TableOrderPage() {
           method: "POST",
           body: { status },
         },
-        () => ordersApi.setItemStatus(order.id, item.id, status),
+        (clientOperationId) => ordersApi.setItemStatus(order.id, item.id, status, clientOperationId),
       );
       if (!outcome.queued) {
         void queryClient.invalidateQueries({ queryKey: ["orders"] });
@@ -268,21 +272,33 @@ export function TableOrderPage() {
         <div className="stack">
           {visibleItems.map((item) => (
             <div key={item.id} className={`menu-item ${item.availability_status === "SOLD_OUT" ? "soldout" : ""}`}>
+              <div className="menu-item-image">
+                {item.image_url ? (
+                  <img
+                    src={resolveMenuImageUrl(item.image_url)}
+                    alt={item.name}
+                    loading="lazy"
+                    onError={(event) => {
+                      event.currentTarget.style.display = "none";
+                    }}
+                  />
+                ) : null}
+              </div>
               <div className="grow">
                 <div style={{ fontWeight: 700 }}>{item.name}</div>
                 {item.description ? <div className="hint">{item.description}</div> : null}
                 <div className="row wrap" style={{ marginTop: 4 }}>
                   <span className="price">{money(item.price)}</span>
-                  <span className="chip">{item.preparation_area === "GRILL" ? "parrilla" : item.preparation_area === "KITCHEN" ? "cocina" : "entrega directa"}</span>
                   {item.availability_status === "SOLD_OUT" ? <span className="chip danger">agotado</span> : null}
                 </div>
               </div>
               <button
-                className="btn small"
+                className="btn menu-add-button"
+                aria-label={`Agregar ${item.name}`}
                 disabled={item.availability_status === "SOLD_OUT"}
                 onClick={() => addToCart(item)}
               >
-                + Agregar
+                +
               </button>
             </div>
           ))}

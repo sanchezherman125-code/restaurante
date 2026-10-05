@@ -38,4 +38,58 @@ describe("sendOrQueue", () => {
     expect((init.headers as Record<string, string>)["Idempotency-Key"]).toBe(firstOperationId);
     expect(JSON.parse(String(init.body)).client_operation_id).toBe(firstOperationId);
   });
+
+  it("no deja que flushQueue reenvíe una operación directa que sigue en vuelo", async () => {
+    let releaseRequest: () => void = () => undefined;
+    let requestStarted: () => void = () => undefined;
+    const requestInFlight = new Promise<void>((resolve) => {
+      requestStarted = resolve;
+    });
+    const directRequest = vi.fn(async () => {
+      requestStarted();
+      await new Promise<void>((resolve) => {
+        releaseRequest = resolve;
+      });
+    });
+    const queuedRequest = vi.fn();
+    vi.stubGlobal("fetch", queuedRequest);
+
+    const direct = sendOrQueue(
+      {
+        operation_type: "UPDATE_ORDER_ITEM_STATUS",
+        path: "/api/v1/orders/order-1/items/item-1/status",
+        method: "POST",
+        body: { status: "READY" },
+      },
+      directRequest,
+    );
+
+    await requestInFlight;
+    expect((await listOperations())[0]?.status).toBe("SENDING");
+
+    await flushQueue();
+    expect(directRequest).toHaveBeenCalledTimes(1);
+    expect(queuedRequest).not.toHaveBeenCalled();
+
+    releaseRequest();
+    await direct;
+    expect(await listOperations()).toHaveLength(0);
+  });
+
+  it("devuelve a LOCAL_PENDING una petición directa que falla por red", async () => {
+    const outcome = await sendOrQueue(
+      {
+        operation_type: "UPDATE_ORDER_ITEM_STATUS",
+        path: "/api/v1/orders/order-1/items/item-1/status",
+        method: "POST",
+        body: { status: "READY" },
+      },
+      async () => {
+        throw new NetworkError();
+      },
+    );
+
+    expect(outcome.queued).toBe(true);
+    expect((await listOperations())[0]).toMatchObject({ status: "LOCAL_PENDING", attempt_count: 1 });
+  });
 });

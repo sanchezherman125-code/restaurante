@@ -10,7 +10,6 @@ const EVENT_TOASTS: Record<string, { role?: string[]; kind: "success" | "info" |
     kind: "success",
     title: (d) => `${String(d["table_name"] ?? "Pedido")} — Listo para entregar`,
   },
-  "order_item.ready": { kind: "info", title: () => "Producto listo" },
   "command.created": { role: ["KITCHEN", "GRILL", "ADMIN"], kind: "info", title: () => "Nueva comanda" },
   "order.created": { kind: "info", title: () => "Nuevo pedido" },
   "order.paid": { role: ["WAITER", "ADMIN"], kind: "success", title: () => "Pago registrado" },
@@ -21,6 +20,22 @@ const EVENT_TOASTS: Record<string, { role?: string[]; kind: "success" | "info" |
   "shift.opened": { kind: "info", title: () => "Turno abierto" },
   "shift.closed": { kind: "info", title: () => "Turno cerrado" },
 };
+
+export function orderItemReadyTitle(role: string | undefined, data: Record<string, unknown>): string | null {
+  const name = String(data["name"] ?? "Producto");
+  switch (data["preparation_area"]) {
+    case "KITCHEN":
+      if (role === "GRILL") return `Cocina terminó — ${name}`;
+      if (role === "WAITER") return `Plato listo — ${name}`;
+      return null;
+    case "GRILL":
+      if (role === "KITCHEN") return `Parrilla terminó — ${name}`;
+      if (role === "WAITER") return `Plato listo — ${name}`;
+      return null;
+    default:
+      return null;
+  }
+}
 
 function invalidateFor(event: string, client: QueryClient): void {
   switch (event) {
@@ -91,6 +106,11 @@ class RealtimeClient {
     invalidateFor(event, this.client);
 
     const role = useSession.getState().user?.role;
+    if (event === "order_item.ready") {
+      const title = orderItemReadyTitle(role, data);
+      if (title) useUi.getState().toast("info", title);
+      return;
+    }
     const config = EVENT_TOASTS[event];
     if (config && (!config.role || !role || config.role.includes(role))) {
       useUi.getState().toast(config.kind, config.title(data));

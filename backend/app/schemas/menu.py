@@ -72,6 +72,7 @@ class MenuItemOut(BaseModel):
     expected_prep_minutes: int | None
     is_available: bool
     is_active: bool
+    image_url: str | None
     availability_status: AvailabilityStatus = AvailabilityStatus.AVAILABLE
 
 

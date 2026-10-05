@@ -56,6 +56,7 @@ export interface MenuItem {
   expected_prep_minutes: number | null;
   is_available: boolean;
   is_active: boolean;
+  image_url: string | null;
   availability_status: AvailabilityStatus;
 }
 

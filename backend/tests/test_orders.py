@@ -250,6 +250,45 @@ def test_invalid_transition_rejected(cocina, mesero, open_shift, menu_lookup):
     assert response.json()["error"]["code"] == "INVALID_STATUS_TRANSITION"
 
 
+def test_item_status_change_is_idempotent(cocina, mesero, open_shift, menu_lookup):
+    order = create_order(mesero)
+    command = create_command(mesero, order["id"], [{"menu_item_id": menu_lookup["Pollo a la brasa"]["id"]}])
+    item_id = command["items"][0]["id"]
+    key = str(uuid.uuid4())
+
+    first = cocina.client.post(
+        f"/api/v1/orders/{order['id']}/items/{item_id}/status",
+        json={"status": "PREPARING", "client_operation_id": key},
+    )
+    replay = cocina.client.post(
+        f"/api/v1/orders/{order['id']}/items/{item_id}/status",
+        json={"status": "PREPARING", "client_operation_id": key},
+    )
+
+    assert first.status_code == replay.status_code == 200
+    assert first.json() == replay.json()
+    assert next(item for item in replay.json()["items"] if item["id"] == item_id)["status"] == "PREPARING"
+
+
+def test_order_item_ready_event_includes_table_details(cocina, mesero, open_shift, menu_lookup, monkeypatch):
+    order = create_order(mesero, table_number=1)
+    command = create_command(mesero, order["id"], [{"menu_item_id": menu_lookup["Pollo a la brasa"]["id"]}])
+    item_id = command["items"][0]["id"]
+    events = []
+    monkeypatch.setattr(
+        "app.services.orders.hub.broadcast",
+        lambda event, payload, channels: events.append((event, payload)),
+    )
+
+    cocina.client.post(f"/api/v1/orders/{order['id']}/items/{item_id}/status", json={"status": "PREPARING"})
+    ready = cocina.client.post(f"/api/v1/orders/{order['id']}/items/{item_id}/status", json={"status": "READY"})
+
+    assert ready.status_code == 200
+    _, payload = next(event for event in events if event[0] == "order_item.ready")
+    assert payload["table_name"] == order["table_name"]
+    assert payload["table_number"] == order["table_number"]
+
+
 def test_waiter_cannot_change_kitchen_item(mesero, open_shift, menu_lookup):
     order = create_order(mesero)
     command = create_command(mesero, order["id"], [{"menu_item_id": menu_lookup["Pollo a la brasa"]["id"]}])

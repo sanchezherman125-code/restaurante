@@ -93,9 +93,12 @@ def order_event_payload(order: Order) -> dict:
 
 
 def item_event_payload(item: OrderItem) -> dict:
+    order = item.order
     return {
         "item_id": str(item.id),
         "order_id": str(item.order_id),
+        "table_name": order.table_name if order else None,
+        "table_number": order.table_number if order else None,
         "command_id": str(item.command_id),
         "name": item.menu_item_name_snapshot,
         "quantity": item.quantity,

@@ -1,13 +1,33 @@
+import { useEffect, useId, useRef } from "react";
 import type { ReactNode } from "react";
 
 interface ModalProps {
   title: string;
+  eyebrow?: string;
+  icon?: ReactNode;
+  className?: string;
   onClose: () => void;
   children: ReactNode;
   footer?: ReactNode;
 }
 
-export function Modal({ title, onClose, children, footer }: ModalProps) {
+export function Modal({ title, eyebrow, icon, className, onClose, children, footer }: ModalProps) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+
+  useEffect(() => {
+    const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    requestAnimationFrame(() => dialogRef.current?.focus());
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      previouslyFocused?.focus();
+    };
+  }, [onClose]);
+
   return (
     <div
       className="modal-backdrop"
@@ -15,9 +35,13 @@ export function Modal({ title, onClose, children, footer }: ModalProps) {
         if (event.target === event.currentTarget) onClose();
       }}
     >
-      <div className="modal" role="dialog" aria-modal="true" aria-label={title}>
-        <div className="row">
-          <h2 className="grow">{title}</h2>
+      <div ref={dialogRef} className={`modal ${className ?? ""}`} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
+        <div className="modal-heading">
+          {icon ? <span className="modal-heading-icon" aria-hidden="true">{icon}</span> : null}
+          <div className="modal-heading-copy">
+            {eyebrow ? <span className="modal-eyebrow">{eyebrow}</span> : null}
+            <h2 id={titleId}>{title}</h2>
+          </div>
           <button className="btn ghost small" onClick={onClose} aria-label="Cerrar">
             ✕
           </button>

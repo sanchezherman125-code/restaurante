@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { menuApi, ordersApi } from "../../api/endpoints";
-import { ConfirmDialog } from "../../components/Modal";
+import { ConfirmDialog, Modal } from "../../components/Modal";
 import { EmptyState, Spinner } from "../../components/Layout";
 import { formatElapsed, money, useElapsed } from "../../hooks/useElapsed";
 import { errorMessage, sendOrQueue } from "../../lib/send";
@@ -91,15 +91,25 @@ export function TableOrderPage() {
   const orders = useQuery({ queryKey: ["orders", "active"], queryFn: () => ordersApi.active(), retry: false });
 
   const [categoryId, setCategoryId] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
   const [cart, setCart] = useState<CartLine[]>([]);
+  const [cartOpen, setCartOpen] = useState(false);
   const [orderNotes, setOrderNotes] = useState("");
   const [sending, setSending] = useState(false);
+  const [confirmSend, setConfirmSend] = useState(false);
   const [confirmCancel, setConfirmCancel] = useState<OrderItem | null>(null);
 
   const order = useMemo(() => orders.data?.find((o) => o.table_id === tableId), [orders.data, tableId]);
   const activeCategory = categoryId ?? menu.data?.categories[0]?.id ?? null;
-  const visibleItems = (menu.data?.items ?? []).filter((item) => item.is_active && item.category_id === activeCategory);
+  const visibleItems = (menu.data?.items ?? []).filter((item) => {
+    const matchesCategory = search.trim() ? true : item.category_id === activeCategory;
+    const matchesSearch = !search.trim() || `${item.name} ${item.description ?? ""}`.toLocaleLowerCase("es-PE").includes(search.trim().toLocaleLowerCase("es-PE"));
+    return item.is_active && matchesCategory && matchesSearch;
+  });
   const table = pendingRecord?.table_name ?? order?.table_name ?? "Mesa";
+  const cartUnits = cart.reduce((sum, line) => sum + line.quantity, 0);
+  const cartSubtotal = cart.reduce((sum, line) => sum + Number(line.item.price) * line.quantity, 0);
+  const cartUnitLabel = `${cartUnits} ${cartUnits === 1 ? "unidad" : "unidades"}`;
 
   function addToCart(item: MenuItem) {
     setCart((lines) => {
@@ -130,6 +140,7 @@ export function TableOrderPage() {
         notes: orderNotes.trim() || null,
       };
 
+      let queued = false;
       if (pendingRecord) {
         await enqueue({
           operation_type: "CREATE_COMMAND",
@@ -138,10 +149,7 @@ export function TableOrderPage() {
           body: payload,
           parent_operation_id: pendingRecord.operation_id,
         });
-        toast("warning", "Comanda guardada", "Se enviará automáticamente al recuperar la conexión.");
-        setCart([]);
-        setOrderNotes("");
-        return;
+        queued = true;
       } else if (order) {
         const outcome = await sendOrQueue(
           {
@@ -152,7 +160,7 @@ export function TableOrderPage() {
           },
           (clientOperationId) => ordersApi.createCommand(order.id, payload, clientOperationId),
         );
-        if (outcome.queued) return;
+        queued = outcome.queued;
       } else {
         toast("error", "No hay pedido abierto en esta mesa");
         return;
@@ -160,9 +168,15 @@ export function TableOrderPage() {
 
       setCart([]);
       setOrderNotes("");
-      toast("success", "Comanda enviada", `${cart.length} producto(s) a cocina/parrilla`);
-      void queryClient.invalidateQueries({ queryKey: ["orders"] });
-      void queryClient.invalidateQueries({ queryKey: ["tables"] });
+      setCartOpen(false);
+      setConfirmSend(false);
+      if (queued) {
+        toast("warning", "Comanda guardada localmente", "Se enviará automáticamente al recuperar la conexión.");
+      } else {
+        toast("success", "Comanda enviada", `${cartUnits} unidad(es) a cocina/parrilla`);
+        void queryClient.invalidateQueries({ queryKey: ["orders"] });
+        void queryClient.invalidateQueries({ queryKey: ["tables"] });
+      }
     } catch (error) {
       toast("error", "No se pudo enviar la comanda", errorMessage(error));
     } finally {
@@ -226,50 +240,63 @@ export function TableOrderPage() {
   }
 
   return (
-    <div className="stack">
-      <div className="card">
-        <div className="row wrap">
-          <div className="grow">
-            <h2>{table}</h2>
-            <div className="hint">
-              {pendingRecord
-                ? "Pedido aún sin sincronizar (offline)"
-                : `${order?.persons_count ?? 0} personas · ${order?.status ?? ""}`}
-            </div>
-          </div>
-          <button className="btn ghost small" onClick={() => navigate("/mesas")}>
-            ← Salón
-          </button>
+    <div className="waiter-page order-page stack">
+      <div className="order-header-card">
+        <div className="order-table-summary">
+          <span className="eyebrow">PEDIDO EN CURSO</span>
+          <h1>{table}</h1>
+          <p>
+            {pendingRecord
+              ? "Pedido guardado localmente · pendiente de sincronización"
+              : `${order?.persons_count ?? 0} personas · ${order?.status === "OPEN" ? "Abierta" : order?.status ?? ""}`}
+          </p>
+        </div>
+        <div className="order-header-actions">
+          <button className="btn ghost small" onClick={() => navigate("/mesas")}>← Salón</button>
           {order ? (
-            <button className="btn small" onClick={() => navigate(`/cobro/${order.id}`)}>
-              💳 Cobrar
-            </button>
+            <button className="btn small" onClick={() => navigate(`/cobro/${order.id}`)}>Cobrar</button>
           ) : null}
         </div>
         {order?.items.some((i) => i.status === "READY") ? (
-          <div className="chip success" style={{ marginTop: 10 }}>
-            Hay productos listos para entregar
-          </div>
+          <div className="order-ready-alert">✓ Hay productos listos para entregar</div>
         ) : null}
       </div>
 
-      <div className="card">
-        <div className="section-title" style={{ marginTop: 0 }}>
-          <h2>Carta</h2>
-        </div>
-        <div className="segmented" style={{ marginBottom: 12, overflowX: "auto" }}>
+      {!cartOpen ? (
+        <section className="order-catalog" aria-labelledby="catalog-title">
+          <div className="section-title waiter-section-title">
+            <h2 id="catalog-title">Carta</h2>
+            <span>{search.trim() ? `${visibleItems.length} resultados` : ""}</span>
+          </div>
+          <label className="visually-hidden" htmlFor="menu-search">Buscar platos y bebidas</label>
+          <input
+            id="menu-search"
+            className="input menu-search"
+            type="search"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="Buscar platos y bebidas…"
+          />
+          <span className="category-label">CATEGORÍAS</span>
+          <div className="category-tabs" aria-label="Categorías de la carta">
           {menu.data?.categories.map((category) => (
             <button
               key={category.id}
               className={category.id === activeCategory ? "active" : ""}
-              onClick={() => setCategoryId(category.id)}
+              onClick={() => {
+                setCategoryId(category.id);
+                setSearch("");
+              }}
             >
               {category.name}
             </button>
           ))}
-        </div>
-
-        <div className="stack">
+          </div>
+          <div className="catalog-heading">
+            <h3>{search.trim() ? "Resultados de búsqueda" : menu.data?.categories.find((category) => category.id === activeCategory)?.name ?? "Productos"}</h3>
+            <span>{visibleItems.length} platos</span>
+          </div>
+          <div className="menu-product-list">
           {visibleItems.map((item) => (
             <div key={item.id} className={`menu-item ${item.availability_status === "SOLD_OUT" ? "soldout" : ""}`}>
               <div className="menu-item-image">
@@ -284,12 +311,14 @@ export function TableOrderPage() {
                   />
                 ) : null}
               </div>
-              <div className="grow">
-                <div style={{ fontWeight: 700 }}>{item.name}</div>
+              <div className="grow menu-item-details">
+                <div className="menu-item-name">{item.name}</div>
                 {item.description ? <div className="hint">{item.description}</div> : null}
-                <div className="row wrap" style={{ marginTop: 4 }}>
+                <div className="row wrap menu-item-price-row">
                   <span className="price">{money(item.price)}</span>
-                  {item.availability_status === "SOLD_OUT" ? <span className="chip danger">agotado</span> : null}
+                  <span className={item.availability_status === "SOLD_OUT" ? "availability soldout" : "availability"}>
+                    {item.availability_status === "SOLD_OUT" ? "Agotado" : "Disponible"}
+                  </span>
                 </div>
               </div>
               <button
@@ -302,62 +331,62 @@ export function TableOrderPage() {
               </button>
             </div>
           ))}
-          {visibleItems.length === 0 ? <EmptyState icon="🍽️" title="Sin productos en esta categoría" /> : null}
-        </div>
-      </div>
-
-      {cart.length > 0 ? (
-        <div className="card sticky-actions">
-          <div className="section-title" style={{ marginTop: 0 }}>
-            <h2>Comanda ({cart.reduce((sum, line) => sum + line.quantity, 0)})</h2>
-            <button className="btn ghost small" onClick={() => setCart([])}>
-              Vaciar
-            </button>
+          {visibleItems.length === 0 ? <EmptyState icon="⌕" title="No hay productos para mostrar" hint="Prueba otra categoría o búsqueda." /> : null}
           </div>
-          {cart.map((line) => (
-            <div className="item-row" key={line.item.id}>
-              <div className="name">
-                <div style={{ fontWeight: 700 }}>{line.item.name}</div>
+        </section>
+      ) : (
+        <section className="cart-panel" aria-labelledby="cart-title">
+          <div className="section-title waiter-section-title">
+            <div>
+              <span className="eyebrow">NUEVA COMANDA</span>
+              <h2 id="cart-title">Tu comanda</h2>
+            </div>
+            <button className="btn ghost small" onClick={() => setCartOpen(false)}>← Carta</button>
+          </div>
+          <div className="cart-overview">{cartUnitLabel} · {cart.length} productos <span>Aún no enviados a preparación</span></div>
+          <span className="category-label">PRODUCTOS AGREGADOS</span>
+          <div className="cart-line-list">
+            {cart.map((line) => (
+              <article className="cart-line" key={line.item.id}>
+                <div className="cart-line-heading">
+                  <span className="cart-quantity-badge">{line.quantity}×</span>
+                  <div className="grow"><strong>{line.item.name}</strong><span>{money(Number(line.item.price) * line.quantity)}</span></div>
+                </div>
                 <input
-                  className="input"
-                  style={{ minHeight: 38, marginTop: 6, fontSize: 13 }}
+                  className="input cart-note-input"
                   placeholder="Observación (ej. sin cebolla)"
                   value={line.notes}
-                  onChange={(event) =>
-                    setCart((lines) =>
-                      lines.map((entry) => (entry.item.id === line.item.id ? { ...entry, notes: event.target.value } : entry)),
-                    )
-                  }
+                  onChange={(event) => setCart((lines) => lines.map((entry) => (entry.item.id === line.item.id ? { ...entry, notes: event.target.value } : entry)))}
                 />
-              </div>
-              <div className="qty-stepper">
-                <button onClick={() => setQuantity(line.item.id, line.quantity - 1)}>−</button>
-                <span className="value">{line.quantity}</span>
-                <button onClick={() => setQuantity(line.item.id, line.quantity + 1)}>+</button>
-              </div>
-            </div>
-          ))}
-          <textarea
-            className="textarea"
-            style={{ marginTop: 10 }}
-            placeholder="Observaciones del pedido (opcional)"
-            value={orderNotes}
-            onChange={(event) => setOrderNotes(event.target.value)}
-          />
-          <button
-            data-testid="send-command"
-            className="btn block"
-            style={{ marginTop: 10 }}
-            onClick={() => void sendCommand()}
-            disabled={sending}
-          >
-            {sending ? "Enviando…" : "🚀 Enviar comanda"}
+                <div className="cart-line-footer">
+                  <span>{money(line.item.price)} c/u</span>
+                  <div className="qty-stepper">
+                    <button aria-label={`Restar ${line.item.name}`} onClick={() => setQuantity(line.item.id, line.quantity - 1)}>−</button>
+                    <span className="value">{line.quantity}</span>
+                    <button aria-label={`Sumar ${line.item.name}`} onClick={() => setQuantity(line.item.id, line.quantity + 1)}>+</button>
+                  </div>
+                </div>
+              </article>
+            ))}
+          </div>
+          <label className="label" htmlFor="order-notes">Observaciones de la comanda</label>
+          <textarea id="order-notes" className="textarea cart-order-notes" placeholder="Indicaciones generales (opcional)" value={orderNotes} onChange={(event) => setOrderNotes(event.target.value)} />
+          <div className="cart-subtotal"><span>Subtotal de la comanda</span><strong>{money(cartSubtotal)}</strong></div>
+          <button data-testid="send-command" className="btn block send-command-button" onClick={() => setConfirmSend(true)} disabled={sending || cart.length === 0}>
+            Enviar comanda →
           </button>
-        </div>
+        </section>
+      )}
+
+      {cart.length > 0 && !cartOpen ? (
+        <button className="cart-quick-access" onClick={() => setCartOpen(true)}>
+          <span>▣ &nbsp; Ver comanda · {cartUnitLabel}</span>
+          <strong>{money(cartSubtotal)}</strong>
+        </button>
       ) : null}
 
-      <div className="card">
-        <div className="section-title" style={{ marginTop: 0 }}>
+      <div className="card order-history-card">
+        <div className="section-title">
           <h2>Productos del pedido</h2>
         </div>
         {!order || order.items.length === 0 ? (
@@ -392,6 +421,30 @@ export function TableOrderPage() {
           onConfirm={() => void cancelItem(confirmCancel)}
           onCancel={() => setConfirmCancel(null)}
         />
+      ) : null}
+
+      {confirmSend ? (
+        <Modal
+          title="Enviar comanda"
+          onClose={() => !sending && setConfirmSend(false)}
+          footer={
+            <>
+              <button className="btn secondary grow" onClick={() => setConfirmSend(false)} disabled={sending}>Cancelar</button>
+              <button className="btn grow" onClick={() => void sendCommand()} disabled={sending}>{sending ? "Enviando…" : "Confirmar envío"}</button>
+            </>
+          }
+        >
+          <div className="send-confirmation">
+            <span className="eyebrow">CONFIRMACIÓN</span>
+            <h3>Detalle de envío</h3>
+            <div className="send-confirmation-detail">
+              <strong>{cartUnitLabel} en {cart.length} productos</strong>
+              <span>{table} · {order?.persons_count ?? pendingRecord?.persons_count ?? 0} personas</span>
+              <div><span>Subtotal</span><strong>{money(cartSubtotal)}</strong></div>
+            </div>
+            <p className="hint">Se enviará a las áreas de preparación correspondientes.</p>
+          </div>
+        </Modal>
       ) : null}
     </div>
   );

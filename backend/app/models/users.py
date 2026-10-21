@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -40,9 +40,11 @@ class RestaurantTable(Base):
 
 class PushSubscription(Base):
     __tablename__ = "push_subscriptions"
+    __table_args__ = (Index("ix_push_subscriptions_user_device", "user_id", "device_id"),)
 
     id: Mapped[uuid.UUID] = uuid_pk()
     user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    device_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     endpoint: Mapped[str] = mapped_column(Text, unique=True)
     keys: Mapped[dict] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

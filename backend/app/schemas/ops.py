@@ -1,8 +1,9 @@
 from datetime import datetime
 from decimal import Decimal
+from urllib.parse import urlparse
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.models.enums import PreparationArea, ShiftStatus
 
@@ -69,4 +70,32 @@ class ReceiptUploadOut(BaseModel):
 
 class PushSubscriptionCreate(BaseModel):
     endpoint: str = Field(min_length=1, max_length=2000)
-    keys: dict = Field(default_factory=dict)
+    keys: dict = Field(min_length=2, max_length=2)
+
+    @field_validator("endpoint")
+    @classmethod
+    def validate_push_endpoint(cls, value: str) -> str:
+        parsed = urlparse(value)
+        host = (parsed.hostname or "").lower()
+        trusted = (
+            host == "fcm.googleapis.com"
+            or host == "web.push.apple.com"
+            or host.endswith(".push.services.mozilla.com")
+        )
+        if (
+            parsed.scheme != "https" or not trusted or parsed.port not in (None, 443)
+            or parsed.username is not None or parsed.password is not None or parsed.fragment
+        ):
+            raise ValueError("Un proveedor Web Push HTTPS conocido es obligatorio")
+        return value
+
+    @field_validator("keys")
+    @classmethod
+    def validate_push_keys(cls, value: dict) -> dict:
+        if set(value) != {"auth", "p256dh"} or any(not isinstance(key, str) or not key for key in value.values()):
+            raise ValueError("Push subscription keys are invalid")
+        return value
+
+
+class PushSubscriptionDelete(BaseModel):
+    endpoint: str = Field(min_length=1, max_length=2000)

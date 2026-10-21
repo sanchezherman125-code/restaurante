@@ -11,6 +11,23 @@ PyJWT==2.15.1
 python-multipart==0.0.32
 email-validator==2.3.0
 httpx==0.28.1
+pywebpush==2.5.0
+# Web Push crypto and provider transports are pinned explicitly as well.
+aiohttp==3.14.5
+cryptography==50.0.2
+http-ece==1.2.1
+py-vapid==1.9.4
+requests==2.34.2
+# New leaf dependencies required by the pinned Web Push transports.
+aiohappyeyeballs==2.7.1
+aiosignal==1.4.0
+attrs==26.1.0
+charset-normalizer==3.5.2
+frozenlist==1.8.0
+multidict==6.9.1
+propcache==0.5.4
+urllib3==2.8.0
+yarl==1.25.1
 # Transitive runtime dependencies are pinned to keep rebuilds reproducible.
 annotated-doc==0.0.5
 annotated-types==0.8.0

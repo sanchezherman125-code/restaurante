@@ -29,6 +29,16 @@ export default function App() {
     if (state.user?.id !== previous.user?.id) queryClient.clear();
   }), []);
 
+  useEffect(() => {
+    const onServiceWorkerMessage = (event: MessageEvent<{ type?: string; route?: string }>) => {
+      if (event.data?.type !== "notification.navigate") return;
+      const route = ["/comandas", "/pedidos", "/mesas"].includes(event.data.route ?? "") ? event.data.route! : "/";
+      window.location.assign(route);
+    };
+    navigator.serviceWorker?.addEventListener("message", onServiceWorkerMessage);
+    return () => navigator.serviceWorker?.removeEventListener("message", onServiceWorkerMessage);
+  }, []);
+
   useRealtime(queryClient);
 
   return (

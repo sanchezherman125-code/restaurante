@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import type { QueryClient } from "@tanstack/react-query";
 import { getAccessToken, getDeviceId, tryRefresh } from "../api/client";
 import { useSession } from "../stores/session";
-import { playBeep, useUi } from "../stores/ui";
+import { playNotificationSound, useUi, vibrateNotification } from "../stores/ui";
 
 const EVENT_TOASTS: Record<string, { role?: string[]; kind: "success" | "info" | "warning"; title: (d: Record<string, unknown>) => string }> = {
   "order.ready": {
@@ -20,6 +20,7 @@ const EVENT_TOASTS: Record<string, { role?: string[]; kind: "success" | "info" |
   "shift.opened": { kind: "info", title: () => "Turno abierto" },
   "shift.closed": { kind: "info", title: () => "Turno cerrado" },
 };
+const PUSH_EVENTS = new Set(["order.ready", "command.created", "order_item.ready", "order.paid"]);
 
 export function orderItemReadyTitle(role: string | undefined, data: Record<string, unknown>): string | null {
   const name = String(data["name"] ?? "Producto");
@@ -35,6 +36,30 @@ export function orderItemReadyTitle(role: string | undefined, data: Record<strin
     default:
       return null;
   }
+}
+
+export function isDuplicateNotification(id: string | undefined): boolean {
+  if (!id) return false;
+  const key = "restaurante.notification-events";
+  const now = Date.now();
+  try {
+    const previous = JSON.parse(localStorage.getItem(key) ?? "{}") as Record<string, number>;
+    if (previous[id] && now - previous[id] < 60 * 60 * 1000) return true;
+    const recent = Object.fromEntries(Object.entries(previous).filter(([, at]) => now - at < 60 * 60 * 1000).slice(-250));
+    recent[id] = now;
+    localStorage.setItem(key, JSON.stringify(recent));
+  } catch { /* storage no disponible: dedupe local básico */ }
+  return false;
+}
+
+export function canReceiveCommandNotification(role: string | undefined, data: Record<string, unknown>): boolean {
+  if (role === "ADMIN") return true;
+  const areas = Array.isArray(data.areas) ? data.areas.map(String) : [];
+  return !!role && areas.includes(role);
+}
+
+export function shouldUseSystemPush(event: string, pushEnabled: boolean): boolean {
+  return pushEnabled && PUSH_EVENTS.has(event);
 }
 
 function invalidateFor(event: string, client: QueryClient): void {
@@ -101,22 +126,38 @@ class RealtimeClient {
     void this.client.invalidateQueries();
   }
 
-  private handle(event: string, data: Record<string, unknown>): void {
+  private handle(event: string, data: Record<string, unknown>, eventId?: string): void {
     if (!this.client) return;
     invalidateFor(event, this.client);
+
+    const userId = useSession.getState().user?.id;
+    const preferences = useUi.getState();
+    if (userId && preferences.preferencesUserId !== userId) preferences.loadPreferences(userId);
+    const pushEnabled = useUi.getState().pushEnabled;
+    // When system push is enabled, the service worker owns the alert path in every tab.
+    if (shouldUseSystemPush(event, pushEnabled) || isDuplicateNotification(eventId)) return;
 
     const role = useSession.getState().user?.role;
     if (event === "order_item.ready") {
       const title = orderItemReadyTitle(role, data);
-      if (title) useUi.getState().toast("info", title);
+      if (title) {
+        useUi.getState().toast("info", title);
+        if (document.visibilityState !== "hidden") {
+          playNotificationSound("ready");
+          vibrateNotification();
+        }
+      }
       return;
     }
+    if (event === "command.created" && !canReceiveCommandNotification(role, data)) return;
     const config = EVENT_TOASTS[event];
     if (config && (!config.role || !role || config.role.includes(role))) {
       useUi.getState().toast(config.kind, config.title(data));
-      if (event === "order.ready" || event === "command.created" || event === "availability.changed") {
-        playBeep(event === "availability.changed" ? "error" : "ready");
-      }
+      if (document.visibilityState === "hidden") return;
+      const sound = event === "availability.changed" ? "error"
+        : event === "command.created" ? "command" : event === "order.paid" ? "payment" : "ready";
+      playNotificationSound(sound);
+      vibrateNotification();
     }
   }
 
@@ -149,14 +190,14 @@ class RealtimeClient {
 
     this.ws.onmessage = (message) => {
       try {
-        const parsed = JSON.parse(message.data as string) as { event?: string; data?: Record<string, unknown> };
+        const parsed = JSON.parse(message.data as string) as { event?: string; id?: string; data?: Record<string, unknown> };
         if (parsed.event === "connection.ready") {
           useUi.getState().setConnection("online");
           this.resync();
           return;
         }
         if (parsed.event && parsed.event !== "pong") {
-          this.handle(parsed.event, parsed.data ?? {});
+          this.handle(parsed.event, parsed.data ?? {}, parsed.id);
         }
       } catch {
         // mensaje no parseable
@@ -193,7 +234,11 @@ export function useRealtime(queryClient: QueryClient): void {
       realtime.stop();
       realtime.start(queryClient);
     };
-    if (useSession.getState().user) realtime.start(queryClient);
+    const initialUser = useSession.getState().user;
+    if (initialUser) {
+      useUi.getState().loadPreferences(initialUser.id);
+      realtime.start(queryClient);
+    }
     const onOffline = () => {
       realtime.stop();
       useUi.getState().setConnection("offline");
@@ -202,7 +247,10 @@ export function useRealtime(queryClient: QueryClient): void {
     window.addEventListener("offline", onOffline);
     window.addEventListener("online", onOnline);
     const unsubscribe = useSession.subscribe((state, previous) => {
-      if (state.user && !previous.user) restart();
+      if (state.user && state.user.id !== previous.user?.id) {
+        useUi.getState().loadPreferences(state.user.id);
+        restart();
+      }
       else if (!state.user && previous.user) realtime.stop();
     });
     return () => {

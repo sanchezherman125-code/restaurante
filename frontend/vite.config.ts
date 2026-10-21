@@ -10,6 +10,9 @@ export default defineConfig(({ mode }) => {
     plugins: [
       react(),
       VitePWA({
+        strategies: "injectManifest",
+        srcDir: "src",
+        filename: "sw.ts",
         registerType: "autoUpdate",
         includeAssets: ["favicon.png", "icons/icon-192.png", "icons/icon-512.png"],
         manifest: {
@@ -27,10 +30,7 @@ export default defineConfig(({ mode }) => {
             { src: "/icons/icon-512.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
           ],
         },
-        workbox: {
-          globPatterns: ["**/*.{js,css,html,svg,png,woff2}"],
-          navigateFallback: "/index.html",
-        },
+        injectManifest: { globPatterns: ["**/*.{js,css,html,svg,png,woff2}"] },
         devOptions: { enabled: false },
       }),
     ],

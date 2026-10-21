@@ -1,5 +1,8 @@
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
+import { useEffect, useState } from "react";
 import { ConnectionIndicator } from "../components/ConnectionIndicator";
+import { NotificationSettings } from "../components/NotificationSettings";
+import { hasPushSubscription } from "../notifications/push";
 import { SyncIndicator } from "../components/SyncIndicator";
 import { useSession } from "../stores/session";
 import { useUi } from "../stores/ui";
@@ -75,8 +78,20 @@ export function AppLayout() {
   const user = useSession((state) => state.user);
   const logout = useSession((state) => state.logout);
   const soundEnabled = useUi((state) => state.soundEnabled);
-  const toggleSound = useUi((state) => state.toggleSound);
+  const loadPreferences = useUi((state) => state.loadPreferences);
+  const updatePreferences = useUi((state) => state.updatePreferences);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
   const navigate = useNavigate();
+
+  useEffect(() => {
+    if (!user?.id) return;
+    loadPreferences(user.id);
+    let active = true;
+    void hasPushSubscription().then((enabled) => {
+      if (active) updatePreferences(user.id, { pushEnabled: enabled });
+    });
+    return () => { active = false; };
+  }, [user?.id, loadPreferences, updatePreferences]);
 
   const nav = NAV_BY_ROLE[user?.role ?? ""] ?? [];
 
@@ -90,7 +105,7 @@ export function AppLayout() {
         <span className="spacer" />
         <ConnectionIndicator />
         <SyncIndicator />
-        <button className="header-icon-button sound-button" onClick={toggleSound} title={soundEnabled ? "Desactivar sonido de notificaciones" : "Activar sonido de notificaciones"} aria-label={soundEnabled ? "Desactivar sonido de notificaciones" : "Activar sonido de notificaciones"}>
+        <button className="header-icon-button sound-button" onClick={() => setNotificationsOpen(true)} title="Ajustes de notificaciones" aria-label="Ajustes de notificaciones" aria-expanded={notificationsOpen}>
           <LineIcon name="bell" />
           {soundEnabled ? <span className="notification-dot" /> : null}
         </button>
@@ -119,6 +134,7 @@ export function AppLayout() {
           </NavLink>
         ))}
       </nav>
+      {notificationsOpen && user ? <NotificationSettings userId={user.id} onClose={() => setNotificationsOpen(false)} /> : null}
     </div>
   );
 }

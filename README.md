@@ -13,6 +13,8 @@ Producción: use [render.yaml](./render.yaml), [.env.production.example](./.env.
 y la [guía de publicación](./docs/deployment.md). El seed y las cuentas de ejemplo de esta
 página son exclusivamente de desarrollo/pruebas.
 
+Notificaciones: [diagnóstico, configuración VAPID y matriz física](./docs/notifications.md).
+
 ---
 
 ## 1. Requisitos

@@ -37,6 +37,12 @@ services:
         sync: false
       - key: SUPABASE_STORAGE_BUCKET
         value: receipts
+      - key: VAPID_PUBLIC_KEY
+        sync: false
+      - key: VAPID_PRIVATE_KEY
+        sync: false
+      - key: VAPID_SUBJECT
+        sync: false
       - key: BUSINESS_TIMEZONE
         value: America/Lima
       - key: ADMIN_USERNAME

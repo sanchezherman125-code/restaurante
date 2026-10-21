@@ -4,7 +4,7 @@ from fastapi import APIRouter, Request, Response
 
 from app.core import audit as audit_actions
 from app.core import login_rate
-from app.core.deps import CurrentUser, DbSession, _extract_token
+from app.core.deps import CurrentUser, DbSession, DeviceId, _extract_token
 from app.core.errors import UnauthorizedError
 from app.core.security import (
     decode_token,
@@ -12,7 +12,7 @@ from app.core.security import (
     needs_rehash,
     verify_pin,
 )
-from app.models import User
+from app.models import PushSubscription, User
 from app.schemas.auth import LoginRequest, RefreshRequest, TokenResponse, UserOut
 from app.services.auth import issue_tokens, validate_session
 
@@ -68,10 +68,15 @@ def refresh(payload: RefreshRequest, db: DbSession, response: Response) -> Token
 
 
 @router.post("/logout", status_code=204)
-def logout(request: Request, db: DbSession, user: CurrentUser) -> Response:
+def logout(request: Request, db: DbSession, user: CurrentUser, device_id: DeviceId) -> Response:
     payload = decode_token(_extract_token(request, request.headers.get("authorization")))
     session = validate_session(db, payload, lock=True)
     session.revoked_at = datetime.now(UTC)
+    if device_id:
+        db.query(PushSubscription).filter(
+            PushSubscription.user_id == user.id,
+            PushSubscription.device_id == device_id,
+        ).delete(synchronize_session=False)
     db.commit()
     return Response(status_code=204, headers={"Cache-Control": "no-store"})
 

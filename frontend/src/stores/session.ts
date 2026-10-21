@@ -5,6 +5,7 @@ import { authApi } from "../api/endpoints";
 import { clearTokens, getDeviceId, getAccessToken, setTokens } from "../api/client";
 import { listOperations } from "../offline/queue-db";
 import { useUi } from "./ui";
+import { disablePushNotifications } from "../notifications/push";
 
 interface SessionState {
   user: User | null;
@@ -34,6 +35,7 @@ export const useSession = create<SessionState>()(
           useUi.getState().toast("warning", "Operaciones pendientes", "Sincronice o resuelva los pendientes antes de cerrar sesión.");
           return;
         }
+        await disablePushNotifications();
         try {
           await authApi.logout();
         } catch {

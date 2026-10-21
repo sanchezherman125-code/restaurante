@@ -9,10 +9,10 @@ from fastapi import APIRouter, File, UploadFile
 from fastapi.responses import FileResponse, Response
 
 from app.config import settings
-from app.core.deps import DbSession, StaffUser
+from app.core.deps import DbSession, DeviceId, StaffUser
 from app.core.errors import ApiError, ForbiddenError, NotFoundError, ValidationAppError
 from app.models import Expense, PushSubscription, Receipt
-from app.schemas.ops import PushSubscriptionCreate, ReceiptUploadOut
+from app.schemas.ops import PushSubscriptionCreate, PushSubscriptionDelete, ReceiptUploadOut
 
 logger = logging.getLogger("app.receipts")
 router = APIRouter(tags=["receipts"])
@@ -148,13 +148,38 @@ async def download_receipt(filename: str, db: DbSession, user: StaffUser) -> Res
     return FileResponse(path, media_type=content_type, headers=headers)
 
 
+@router.get("/push/public-key")
+def push_public_key() -> dict:
+    configured = settings.vapid_public_key and settings.vapid_private_key and settings.vapid_subject
+    return {"public_key": settings.vapid_public_key if configured else None}
+
+
 @router.post("/push/subscriptions", status_code=201)
-def save_push_subscription(payload: PushSubscriptionCreate, db: DbSession, user: StaffUser) -> dict:
+def save_push_subscription(
+    payload: PushSubscriptionCreate, db: DbSession, user: StaffUser, device_id: DeviceId
+) -> dict:
+    if not device_id:
+        raise ApiError(422, "DEVICE_ID_REQUIRED", "Falta identificar este dispositivo para activar Push.")
+    if not settings.vapid_public_key or not settings.vapid_private_key or not settings.vapid_subject:
+        raise ApiError(503, "PUSH_UNAVAILABLE", "Las notificaciones push no están configuradas.")
     existing = db.query(PushSubscription).filter(PushSubscription.endpoint == payload.endpoint).first()
     if existing is None:
-        db.add(PushSubscription(user_id=user.id, endpoint=payload.endpoint, keys=payload.keys))
+        db.add(PushSubscription(user_id=user.id, device_id=device_id, endpoint=payload.endpoint, keys=payload.keys))
     else:
         existing.keys = payload.keys
         existing.user_id = user.id
+        existing.device_id = device_id
     db.commit()
     return {"status": "ok"}
+
+
+@router.delete("/push/subscriptions", status_code=204)
+def delete_push_subscription(payload: PushSubscriptionDelete, db: DbSession, user: StaffUser) -> Response:
+    subscription = db.query(PushSubscription).filter(
+        PushSubscription.endpoint == payload.endpoint,
+        PushSubscription.user_id == user.id,
+    ).first()
+    if subscription:
+        db.delete(subscription)
+        db.commit()
+    return Response(status_code=204)

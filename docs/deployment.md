@@ -18,6 +18,10 @@ La validación local no equivale a una publicación ni a una verificación del e
 3. Complete las variables solicitadas por el Blueprint:
    - API: `DATABASE_URL`, `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`,
      `CORS_ORIGINS`, `FRONTEND_URL`, `ALLOWED_HOSTS`, `ADMIN_USERNAME`, `ADMIN_PIN`.
+     Para Web Push, configure además `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` y
+     `VAPID_SUBJECT` como secretos/variables del API. Si no configura el par VAPID, el
+     resto de la aplicación funciona pero los avisos de sistema quedan desactivados;
+     consulte [Notificaciones](./notifications.md).
    - Frontend: `VITE_API_URL=https://URL-DEL-API`, sin barra final ni sufijo `/api`.
    - `CORS_ORIGINS` incluye el origen exacto HTTPS del frontend, sin barra final.
      `FRONTEND_URL` usa ese mismo origen.

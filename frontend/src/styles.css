@@ -333,6 +333,18 @@ table.data { width: 100%; border-collapse: collapse; font-size: .86rem; }table.d
 .header-icon-button, .header-user-button { position: relative; display: grid; flex: 0 0 40px; width: 40px; height: 40px; place-items: center; border: 1px solid #343840; border-radius: 12px; background: #1b1e23; color: #f0eee9; }
 .header-icon-button svg { width: 20px; height: 20px; }
 .notification-dot { position: absolute; top: 7px; right: 7px; width: 6px; height: 6px; border-radius: 50%; background: var(--v2-primary); }
+
+.notification-backdrop { position: fixed; inset: 0; z-index: 90; display: flex; justify-content: flex-end; align-items: flex-start; padding: calc(62px + env(safe-area-inset-top)) 12px 12px; background: rgba(0,0,0,.28); }
+.notification-panel { width: min(100%, 390px); max-height: min(78vh, 620px); overflow: auto; padding: 18px; border: 1px solid var(--border-strong); border-radius: 18px; background: var(--surface, #202126); box-shadow: var(--shadow-raised); }
+.notification-panel-heading { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px; }
+.notification-panel-heading strong { font-size: 1.05rem; }.notification-panel-heading p { margin: 4px 0 0; color: var(--text-dim); font-size: .82rem; }
+.notification-panel-heading .close { border: 0; background: none; color: var(--text-dim); font-size: 1rem; }
+.notification-setting { display: flex; justify-content: space-between; align-items: center; gap: 14px; padding: 14px 0; border-bottom: 1px solid var(--border); }
+.notification-setting span { display: grid; gap: 3px; }.notification-setting small { color: var(--text-dim); font-size: .78rem; line-height: 1.35; }
+.notification-setting input[type="checkbox"] { width: 20px; height: 20px; accent-color: var(--v2-primary); flex: 0 0 auto; }
+.volume-setting input[type="range"] { width: 46%; accent-color: var(--v2-primary); }.notification-test { margin: 12px 0 0; }
+.push-setting .btn { flex: 0 0 auto; }.push-setting .btn:disabled { opacity: .55; }
+.notification-status { margin: 12px 0 0; color: var(--text-dim); font-size: .82rem; line-height: 1.4; }
 .header-user-button { border: 0; border-radius: 12px; background: #332a23; color: var(--v2-primary); font-size: .68rem; font-weight: 850; }
 .role-waiter .app-main { padding: 16px 16px calc(96px + env(safe-area-inset-bottom)); }
 .role-waiter .app-header > .chip.info { display: none; }

@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     frontend_url: str = "http://localhost:5173"
     allowed_hosts: str = "localhost,127.0.0.1,testserver"
 
+    vapid_public_key: str = ""
+    vapid_private_key: str = ""
+    vapid_subject: str = ""
+
     login_max_attempts: int = 5
     login_lockout_minutes: int = 5
 
@@ -81,6 +85,13 @@ class Settings(BaseSettings):
             return
         if self.environment not in {"production", "production-pilot"}:
             raise RuntimeError("ENVIRONMENT debe ser development, test, production-pilot o production.")
+        if bool(self.vapid_public_key) != bool(self.vapid_private_key):
+            raise RuntimeError("VAPID_PUBLIC_KEY y VAPID_PRIVATE_KEY deben configurarse juntos.")
+        if self.vapid_public_key and (
+            not (self.vapid_subject.startswith("mailto:") or self.vapid_subject.startswith("https://"))
+            or "example.com" in self.vapid_subject.lower()
+        ):
+            raise RuntimeError("VAPID_SUBJECT debe ser un mailto o URL HTTPS de contacto real.")
         if len(self.jwt_secret) < 32 or any(
             word in self.jwt_secret.lower() for word in ("dev-secret", "cambie", "cambiar", "change-me", "example")
         ):

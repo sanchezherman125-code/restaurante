@@ -23,6 +23,16 @@ def test_migrations_match_models():
         )).scalar() == 0
 
 
+def test_health_allows_get_and_head_without_exposing_a_head_body(client):
+    get_response = client.get("/health")
+    head_response = client.head("/health")
+
+    assert get_response.status_code == head_response.status_code == 200
+    assert get_response.json()["status"] == "ok"
+    assert head_response.content == b""
+    assert head_response.headers["X-Content-Type-Options"] == "nosniff"
+
+
 def test_database_rejects_invalid_price(menu_lookup):
     with SessionLocal() as db:
         item = db.get(MenuItem, uuid.UUID(menu_lookup["Pollo a la brasa"]["id"]))

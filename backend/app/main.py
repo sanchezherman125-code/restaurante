@@ -130,7 +130,7 @@ def create_app() -> FastAPI:
             },
         )
 
-    @app.get("/health", tags=["system"])
+    @app.api_route("/health", methods=["GET", "HEAD"], tags=["system"])
     def health() -> dict:
         return {"status": "ok", "environment": settings.environment}
 

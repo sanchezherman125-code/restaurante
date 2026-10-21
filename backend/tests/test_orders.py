@@ -1,5 +1,8 @@
 import uuid
 
+from app.db import SessionLocal
+from app.models import AuditLog, IdempotencyKey, Order
+from app.models.enums import OrderStatus
 from tests.conftest import create_command, create_order
 
 
@@ -337,6 +340,85 @@ def test_cancel_pending_item(mesero, open_shift, menu_lookup):
     assert item["cancelled_after_preparation_started"] is False
     assert item["cancellation_reason"] == "cliente se arrepintió"
     assert float(response.json()["total"]) == 0.0
+
+
+def test_cancel_rejects_paid_or_closed_orders_with_conflict(admin, mesero, open_shift, menu_lookup):
+    paid_order = create_order(mesero, table_number=1)
+    paid_command = create_command(mesero, paid_order["id"], [
+        {"menu_item_id": menu_lookup["Pollo a la brasa"]["id"]},
+    ])
+    paid_item_id = paid_command["items"][0]["id"]
+    payment = admin.client.post(f"/api/v1/orders/{paid_order['id']}/payments", json={
+        "method": "CASH", "amount": "25.00",
+    })
+    assert payment.status_code == 201
+    paid_cancel = mesero.client.post(
+        f"/api/v1/orders/{paid_order['id']}/items/{paid_item_id}/cancel", json={"reason": "prueba"},
+    )
+    assert paid_cancel.status_code == 409
+    assert paid_cancel.json()["error"]["code"] == "ORDER_ALREADY_PAID"
+
+    closed_order = create_order(mesero, table_number=2)
+    closed_command = create_command(mesero, closed_order["id"], [
+        {"menu_item_id": menu_lookup["Pollo a la brasa"]["id"]},
+    ])
+    with SessionLocal() as db:
+        order = db.get(Order, closed_order["id"])
+        order.status = OrderStatus.CLOSED
+        db.commit()
+    closed_cancel = mesero.client.post(
+        f"/api/v1/orders/{closed_order['id']}/items/{closed_command['items'][0]['id']}/cancel",
+        json={"reason": "prueba"},
+    )
+    assert closed_cancel.status_code == 409
+    assert closed_cancel.json()["error"]["code"] == "ORDER_ALREADY_CLOSED"
+
+
+def test_partial_payment_allows_cancel_only_when_new_total_covers_paid_amount(admin, mesero, open_shift, menu_lookup):
+    equal_order = create_order(mesero, table_number=1)
+    equal_command = create_command(mesero, equal_order["id"], [
+        {"menu_item_id": menu_lookup["Pollo a la brasa"]["id"]},
+        {"menu_item_id": menu_lookup["Inca Kola 500ml"]["id"]},
+    ])
+    drink = next(item for item in equal_command["items"] if item["menu_item_name_snapshot"] == "Inca Kola 500ml")
+    assert admin.client.post(f"/api/v1/orders/{equal_order['id']}/payments", json={
+        "method": "CASH", "amount": "25.00",
+    }).status_code == 201
+
+    allowed = mesero.client.post(
+        f"/api/v1/orders/{equal_order['id']}/items/{drink['id']}/cancel", json={"reason": "cliente desistió"},
+    )
+    assert allowed.status_code == 200
+    assert allowed.json()["total"] == "25.00"
+    assert allowed.json()["paid_amount"] == "25.00"
+    assert allowed.json()["status"] == "PAID"
+
+    order = create_order(mesero, table_number=2)
+    command = create_command(mesero, order["id"], [
+        {"menu_item_id": menu_lookup["Pollo a la brasa"]["id"]},
+        {"menu_item_id": menu_lookup["Inca Kola 500ml"]["id"]},
+    ])
+    chicken = next(item for item in command["items"] if item["menu_item_name_snapshot"] == "Pollo a la brasa")
+    assert admin.client.post(f"/api/v1/orders/{order['id']}/payments", json={
+        "method": "CASH", "amount": "20.00",
+    }).status_code == 201
+    key = str(uuid.uuid4())
+    rejected = mesero.client.post(
+        f"/api/v1/orders/{order['id']}/items/{chicken['id']}/cancel",
+        json={"reason": "no debe persistir", "client_operation_id": key},
+    )
+    assert rejected.status_code == 409
+    assert rejected.json()["error"]["code"] == "TOTAL_BELOW_PAID"
+    with SessionLocal() as db:
+        persisted_order = db.get(Order, order["id"])
+        persisted_item = next(item for item in persisted_order.items if item.id == uuid.UUID(chicken["id"]))
+        assert persisted_order.total == 31
+        assert persisted_order.paid_amount == 20
+        assert str(persisted_item.status) == "PENDING"
+        assert db.query(IdempotencyKey).filter(IdempotencyKey.key == uuid.UUID(key)).count() == 0
+        assert db.query(AuditLog).filter(
+            AuditLog.action == "ITEM_CANCELLED", AuditLog.entity_id == chicken["id"],
+        ).count() == 0
 
 
 def test_cancel_after_preparation_started(cocina, mesero, open_shift, menu_lookup):

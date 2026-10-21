@@ -200,12 +200,12 @@ def register_payment(
         raise ValidationAppError("PAYMENT_FORBIDDEN", "Solo meseros o administradores registran pagos.")
     order = _get_order(db, order_id)
     _authorize_billing(user, order)
-    if order.status == OrderStatus.CLOSED:
-        raise ConflictError("ORDER_ALREADY_CLOSED", "El pedido ya está cerrado.")
 
     def operation() -> tuple[int, dict]:
-        ensure_order_in_open_shift(db, order.shift_id)
-        locked_order = _lock_order(db, order_id)
+        shift, locked_order = order_service.lock_order_and_shift(db, order.id, order.shift_id)
+        if locked_order.status == OrderStatus.CLOSED:
+            raise ConflictError("ORDER_ALREADY_CLOSED", "El pedido ya está cerrado.")
+        order_service.ensure_shift_open(shift)
         pending = locked_order.total - locked_order.paid_amount
         if payload.amount > pending:
             raise ValidationAppError(
@@ -258,22 +258,23 @@ def register_payment(
         body["order_status"] = locked_order.status
         body["paid_amount"] = str(locked_order.paid_amount)
         body["became_paid"] = became_paid
+        if became_paid:
+            hub.after_commit(
+                db,
+                "order.paid",
+                {
+                    "order_id": str(locked_order.id),
+                    "created_by_waiter_id": str(locked_order.created_by_waiter_id),
+                    "paid_amount": str(locked_order.paid_amount),
+                    "status": locked_order.status,
+                },
+                {"waiters", "admin"},
+            )
         return 201, body
 
     status, body = execute_idempotent(
         db, payload.client_operation_id, user.id, "REGISTER_PAYMENT", operation, scope=str(order_id),
     )
-    if body.get("became_paid"):
-        hub.broadcast(
-            "order.paid",
-            {
-                "order_id": str(order.id),
-                "created_by_waiter_id": str(order.created_by_waiter_id),
-                "paid_amount": str(body.get("paid_amount", order.paid_amount)),
-                "status": body["order_status"],
-            },
-            {"waiters", "admin"},
-        )
     return JSONResponse(status_code=status, content=body)
 
 

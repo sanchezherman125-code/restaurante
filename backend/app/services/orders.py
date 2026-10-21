@@ -6,7 +6,7 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.core.errors import ConflictError, NotFoundError, ValidationAppError
-from app.models import Command, MenuCategory, MenuItem, Order, OrderItem, User
+from app.models import Command, MenuCategory, MenuItem, Order, OrderItem, Shift, User
 from app.models.enums import ItemStatus, OrderStatus, OrderType, PreparationArea
 from app.ws.hub import hub
 
@@ -28,14 +28,15 @@ def utcnow() -> datetime:
 
 
 def recompute_totals(order: Order) -> None:
-    subtotal = Decimal("0.00")
-    for item in order.items:
-        if item.status != ItemStatus.CANCELLED:
-            subtotal += Decimal(item.unit_price_snapshot) * item.quantity
-    order.subtotal = subtotal
-    order.total = subtotal
-    if subtotal < order.paid_amount:
+    total = sum(
+        (Decimal(item.unit_price_snapshot) * item.quantity
+         for item in order.items if item.status != ItemStatus.CANCELLED),
+        Decimal("0.00"),
+    )
+    if total < order.paid_amount:
         raise ConflictError("TOTAL_BELOW_PAID", "El cambio dejaría el total por debajo del monto ya cobrado.")
+    order.subtotal = total
+    order.total = total
 
 
 def compute_status(order: Order) -> str:
@@ -129,6 +130,46 @@ def ensure_order_modifiable(order: Order) -> None:
         raise ConflictError("ORDER_ALREADY_CLOSED", "El pedido ya está cerrado.")
     if order.status == OrderStatus.PAID:
         raise ConflictError("ORDER_ALREADY_PAID", "El pedido ya está pagado.")
+
+
+def ensure_order_cancellable(order: Order) -> None:
+    if order.status == OrderStatus.PAID:
+        raise ConflictError("ORDER_ALREADY_PAID", "No se pueden cancelar productos de un pedido pagado.")
+    if order.status == OrderStatus.CLOSED:
+        raise ConflictError("ORDER_ALREADY_CLOSED", "No se pueden cancelar productos de un pedido cerrado.")
+
+
+def lock_order_and_shift(db: Session, order_id: UUID, shift_id: UUID) -> tuple[Shift, Order]:
+    """Serializa mutaciones financieras usando el orden global turno → pedido."""
+    shift = db.query(Shift).filter(Shift.id == shift_id).populate_existing().with_for_update().one_or_none()
+    if shift is None:
+        raise NotFoundError("SHIFT_NOT_FOUND", "El turno del pedido no existe.")
+    # Dependencias pueden haber cargado el pedido antes de esperar por el bloqueo.
+    db.expire_all()
+    order = db.query(Order).filter(Order.id == order_id).populate_existing().with_for_update(of=Order).one_or_none()
+    if order is None:
+        raise NotFoundError("ORDER_NOT_FOUND", "Pedido no encontrado.")
+    if order.shift_id != shift.id:
+        raise ConflictError("ORDER_SHIFT_CHANGED", "El turno del pedido cambió durante la operación.")
+    return shift, order
+
+
+def ensure_shift_open(shift: Shift) -> None:
+    if shift.status != "OPEN":
+        raise ConflictError("SHIFT_CLOSED", "El turno está cerrado. No se pueden modificar pedidos.")
+
+
+def lock_order_item(db: Session, order_id: UUID, item_id: UUID) -> OrderItem:
+    item = (
+        db.query(OrderItem)
+        .filter(OrderItem.id == item_id, OrderItem.order_id == order_id)
+        .populate_existing()
+        .with_for_update(of=OrderItem)
+        .one_or_none()
+    )
+    if item is None:
+        raise NotFoundError("ITEM_NOT_FOUND", "Producto no encontrado en este pedido.")
+    return item
 
 
 def ensure_table_free(db: Session, table_id: UUID) -> None:
@@ -352,12 +393,24 @@ def cancel_item(
     item: OrderItem,
     reason: str | None,
 ) -> OrderItem:
+    ensure_order_cancellable(item.order)
     current = ItemStatus(item.status)
     if current not in (ItemStatus.PENDING, ItemStatus.PREPARING):
         raise ConflictError(
             "ITEM_NOT_CANCELLABLE",
             f"Un item en estado {current} no puede cancelarse.",
         )
+
+    # Valida el total antes de cambiar o hacer flush de cualquier fila. Así un
+    # pago concurrente que obtuvo primero el bloqueo nunca deja datos parciales.
+    new_total = sum(
+        (Decimal(other.unit_price_snapshot) * other.quantity
+         for other in item.order.items if other.id != item.id and other.status != ItemStatus.CANCELLED),
+        Decimal("0.00"),
+    )
+    if new_total < item.order.paid_amount:
+        raise ConflictError("TOTAL_BELOW_PAID", "El cambio dejaría el total por debajo del monto ya cobrado.")
+
     item.status = ItemStatus.CANCELLED
     item.cancelled_at = utcnow()
     item.cancelled_by = user.id
@@ -367,7 +420,8 @@ def cancel_item(
 
     order = item.order
     previous_order_status = order.status
-    recompute_totals(order)
+    order.subtotal = new_total
+    order.total = new_total
     apply_status(order)
     db.flush()
 

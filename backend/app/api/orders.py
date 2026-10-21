@@ -268,12 +268,13 @@ def cancel_item(
     device_id: Annotated[str | None, Header(alias="X-Device-Id")] = None,
 ) -> JSONResponse:
     order = order_service.get_active_order(db, order_id)
-    item = db.get(OrderItem, item_id)
-    if item is None or item.order_id != order.id:
-        raise NotFoundError("ITEM_NOT_FOUND", "Producto no encontrado en este pedido.")
+
     def operation() -> tuple[int, dict]:
-        ensure_order_in_open_shift(db, order.shift_id)
-        _authorize_cancellation(user, order, item)
+        shift, locked_order = order_service.lock_order_and_shift(db, order.id, order.shift_id)
+        item = order_service.lock_order_item(db, locked_order.id, item_id)
+        _authorize_cancellation(user, locked_order, item)
+        order_service.ensure_order_cancellable(locked_order)
+        order_service.ensure_shift_open(shift)
         before = {"status": item.status}
         order_service.cancel_item(db, user, item, payload.reason)
         audit_actions.audit(
@@ -283,10 +284,10 @@ def cancel_item(
                         "after_preparation_started": item.cancelled_after_preparation_started},
             device_id=device_id,
         )
-        return 200, _mutation_response(user, order)
+        return 200, _mutation_response(user, locked_order)
 
     status, body = execute_idempotent(
-        db, payload.client_operation_id or idem_key, user.id, "CANCEL_ORDER_ITEM", operation, scope=str(item.id),
+        db, payload.client_operation_id or idem_key, user.id, "CANCEL_ORDER_ITEM", operation, scope=str(item_id),
     )
     return JSONResponse(status_code=status, content=body)
 

@@ -5,6 +5,8 @@ os.environ.setdefault(
     "postgresql+psycopg://restaurante:restaurante@localhost:5433/restaurante_test",
 )
 os.environ.setdefault("ENVIRONMENT", "test")
+os.environ["DATABASE_ENV"] = "test"
+os.environ.setdefault("TEST_DATABASE_URL", os.environ["DATABASE_URL"])
 os.environ.setdefault("JWT_SECRET", "test-secret-de-al-menos-32-bytes-para-hs256")
 os.environ.setdefault("LOGIN_MAX_ATTEMPTS", "5")
 os.environ.setdefault("LOGIN_LOCKOUT_MINUTES", "5")
@@ -12,15 +14,19 @@ os.environ.setdefault("LOGIN_LOCKOUT_MINUTES", "5")
 from decimal import Decimal  # noqa: E402
 
 import pytest  # noqa: E402
+from alembic.config import Config  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy import text  # noqa: E402
 
+from alembic import command  # noqa: E402
 from app.core.security import hash_pin, rate_limiter  # noqa: E402
 from app.db import Base, SessionLocal, engine  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models import MenuCategory, MenuItem, RestaurantTable, User  # noqa: E402
 
 OPERATIONAL_TABLES = [
+    "auth_sessions",
+    "receipts",
     "audit_logs",
     "login_attempts",
     "idempotency_keys",
@@ -62,9 +68,12 @@ MENU = {
 
 @pytest.fixture(scope="session")
 def db_created():
-    Base.metadata.create_all(engine)
+    # Exercise the exact production upgrade path, never create_all().
+    command.upgrade(Config("alembic.ini"), "head")
+    with engine.begin() as conn:
+        names = ", ".join(f'"{table.name}"' for table in Base.metadata.sorted_tables)
+        conn.execute(text(f"TRUNCATE TABLE {names} RESTART IDENTITY CASCADE"))
     yield
-    Base.metadata.drop_all(engine)
 
 
 def _seed_catalog(db) -> None:
@@ -108,7 +117,10 @@ def catalog(db_created):
 
 
 @pytest.fixture(autouse=True)
-def clean_db(catalog):
+def clean_db(catalog, monkeypatch, tmp_path):
+    from app.api import receipts
+
+    monkeypatch.setattr(receipts, "UPLOAD_DIR", tmp_path)
     with engine.begin() as conn:
         conn.execute(text("TRUNCATE TABLE " + ", ".join(OPERATIONAL_TABLES) + " RESTART IDENTITY CASCADE"))
         conn.execute(

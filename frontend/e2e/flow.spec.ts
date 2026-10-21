@@ -2,7 +2,7 @@ import { expect, test, type Browser } from "@playwright/test";
 import { clickAll, ensureShiftOpen, login } from "./helpers";
 
 async function createContext(browser: Browser) {
-  const context = await browser.newContext();
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
   const page = await context.newPage();
   return { context, page };
 }
@@ -23,7 +23,7 @@ test("§73 flujo principal completo: turno → mesa → comanda → cocina/parri
     await login(waiter.page, "mesero1");
     await waiter.page.goto("/mesas");
     await waiter.page.getByRole("button", { name: /Mesa 4/ }).click();
-    await waiter.page.getByRole("button", { name: "+", exact: true }).click();
+    await waiter.page.getByRole("button", { name: "Aumentar personas", exact: true }).click();
     await waiter.page.getByRole("button", { name: "Abrir mesa", exact: true }).click();
     await expect(waiter.page.getByRole("heading", { name: "Mesa 4", exact: true })).toBeVisible();
     await expect(waiter.page.getByRole("dialog")).toHaveCount(0);
@@ -31,20 +31,22 @@ test("§73 flujo principal completo: turno → mesa → comanda → cocina/parri
     // 3. Agrega producto de cocina, de parrilla y una bebida
     await waiter.page
       .locator(".menu-item", { hasText: "Causa limeña" })
-      .getByRole("button", { name: "+ Agregar" })
+      .getByRole("button", { name: "Agregar Causa limeña", exact: true })
       .click();
     await waiter.page
       .locator(".menu-item", { hasText: "Anticuchos" })
-      .getByRole("button", { name: "+ Agregar" })
+      .getByRole("button", { name: "Agregar Anticuchos", exact: true })
       .click();
     await waiter.page.getByRole("button", { name: "Bebidas", exact: true }).click();
     await waiter.page
       .locator(".menu-item", { hasText: "Inca Kola 500ml" })
-      .getByRole("button", { name: "+ Agregar" })
+      .getByRole("button", { name: "Agregar Inca Kola 500ml", exact: true })
       .click();
 
     // 4. Envía la comanda
+    await waiter.page.getByRole("button", { name: /Ver comanda/ }).click();
     await waiter.page.getByTestId("send-command").click();
+    await waiter.page.getByRole("button", { name: "Confirmar envío", exact: true }).click();
     await expect(waiter.page.getByText("Comanda enviada")).toBeVisible();
 
     // 5. COCINA recibe solo su parte
@@ -95,7 +97,7 @@ test("§73 flujo principal completo: turno → mesa → comanda → cocina/parri
     await admin.page.getByRole("button", { name: "Cerrar turno", exact: true }).first().click();
     const dialog = admin.page.getByRole("dialog");
     await dialog.getByRole("button", { name: "Cerrar turno", exact: true }).click();
-    await expect(admin.page.getByText("Turno cerrado")).toBeVisible();
+    await expect(admin.page.getByRole("heading", { name: "No hay turno abierto", exact: true })).toBeVisible();
 
     // 13. El reporte contiene la venta
     await admin.page.goto("/historial");

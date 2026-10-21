@@ -3,16 +3,19 @@ from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import (
-    JSON,
+    CheckConstraint,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
     Text,
     UniqueConstraint,
     func,
+    text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -21,6 +24,7 @@ from app.models.users import uuid_pk
 
 class Shift(Base):
     __tablename__ = "shifts"
+    __table_args__ = (Index("uq_shifts_open", "status", unique=True, postgresql_where=text("status = 'OPEN'")),)
 
     id: Mapped[uuid.UUID] = uuid_pk()
     opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -28,11 +32,12 @@ class Shift(Base):
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     closed_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     status: Mapped[str] = mapped_column(String(16), default="OPEN", index=True)
-    snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    snapshot: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
 
 class Expense(Base):
     __tablename__ = "expenses"
+    __table_args__ = (CheckConstraint("amount > 0", name="ck_expense_amount"),)
 
     id: Mapped[uuid.UUID] = uuid_pk()
     shift_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("shifts.id"), index=True)
@@ -57,14 +62,15 @@ class PurchaseListItem(Base):
 
 class IdempotencyKey(Base):
     __tablename__ = "idempotency_keys"
+    __table_args__ = (UniqueConstraint("key", name="idempotency_keys_key_key"),)
 
     id: Mapped[uuid.UUID] = uuid_pk()
-    key: Mapped[uuid.UUID] = mapped_column(unique=True, index=True)
+    key: Mapped[uuid.UUID] = mapped_column(index=True)
     user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     operation_type: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     response_status: Mapped[int] = mapped_column(Integer, default=200)
-    response_body: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    response_body: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
 
 class LoginAttempt(Base):
@@ -90,7 +96,7 @@ class AuditLog(Base):
     action: Mapped[str] = mapped_column(String(64), index=True)
     entity_type: Mapped[str] = mapped_column(String(64))
     entity_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    before_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    after_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    before_data: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    after_data: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     device_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

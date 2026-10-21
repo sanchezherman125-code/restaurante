@@ -89,10 +89,6 @@ export function LoginPage() {
         </button>
       </form>
 
-      <div className="hint" style={{ textAlign: "center", marginTop: 18 }}>
-        Admin <strong>admin/1234</strong> · Mesero <strong>mesero1/1234</strong> · Cocina{" "}
-        <strong>cocina1/1234</strong> · Parrilla <strong>parrilla1/1234</strong>
-      </div>
     </div>
   );
 }

@@ -30,13 +30,15 @@ test("§74 comanda offline queda LOCAL_PENDING, sincroniza sin duplicar y respet
     await waiterPage.getByRole("button", { name: "Entradas", exact: true }).click();
     await waiterPage
       .locator(".menu-item", { hasText: "Papa a la huancaína" })
-      .getByRole("button", { name: "+ Agregar" })
+      .getByRole("button", { name: "Agregar Papa a la huancaína", exact: true })
       .click();
 
     await waiterContext.setOffline(true);
     await expect(waiterPage.locator(".conn")).toContainText("Sin conexión");
 
+    await waiterPage.getByRole("button", { name: /Ver comanda/ }).click();
     await waiterPage.getByTestId("send-command").click();
+    await waiterPage.getByRole("button", { name: "Confirmar envío", exact: true }).click();
 
     // Estado local: GUARDADO LOCALMENTE (nunca "recibido por cocina")
     const syncIndicator = waiterPage.getByTestId("sync-indicator");

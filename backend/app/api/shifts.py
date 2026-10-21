@@ -2,6 +2,7 @@ from datetime import UTC, date, datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Query
+from sqlalchemy.exc import IntegrityError
 
 from app.core import audit as audit_actions
 from app.core.deps import AdminUser, DbSession, StaffUser
@@ -38,7 +39,11 @@ def open_shift(db: DbSession, admin: AdminUser) -> ShiftOut:
         raise ConflictError("SHIFT_ALREADY_OPEN", "Ya hay un turno abierto.")
     shift = Shift(opened_at=datetime.now(UTC), opened_by=admin.id, status="OPEN")
     db.add(shift)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise ConflictError("SHIFT_ALREADY_OPEN", "Ya hay un turno abierto.") from exc
     db.refresh(shift)
     hub.broadcast("shift.opened", {"shift_id": str(shift.id)}, {"admin", "waiters", "kitchen", "grill"})
     return ShiftOut.model_validate(shift)

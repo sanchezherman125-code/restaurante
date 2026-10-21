@@ -1,0 +1,87 @@
+name: Release checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: restaurante
+          POSTGRES_PASSWORD: restaurante
+          POSTGRES_DB: restaurante_test
+        ports: ["5433:5432"]
+        options: >-
+          --health-cmd "pg_isready -U restaurante -d restaurante_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      ENVIRONMENT: test
+      DATABASE_ENV: test
+      TEST_DATABASE_URL: postgresql+psycopg://restaurante:restaurante@localhost:5433/restaurante_test
+      JWT_SECRET: ci-test-secret-with-more-than-thirty-two-characters
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install backend
+        working-directory: backend
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -r requirements-dev.txt
+          .venv/bin/pip check
+      - name: Lint and test the migrated schema
+        working-directory: backend
+        run: |
+          .venv/bin/ruff check .
+          .venv/bin/python -m pytest -ra
+          .venv/bin/alembic check
+      - name: Install frontend
+        working-directory: frontend
+        run: npm ci
+      - name: Audit backend dependencies
+        working-directory: backend
+        run: |
+          .venv/bin/pip install pip-audit==2.10.1
+          .venv/bin/python -m pip_audit -r requirements.txt --no-deps --disable-pip
+      - name: Frontend verification
+        working-directory: frontend
+        run: |
+          npm run lint
+          npm test
+          npm run build
+          npm audit --omit=dev --audit-level=high
+      - name: Prepare isolated E2E database
+        env:
+          PGPASSWORD: restaurante
+        run: psql -h localhost -p 5433 -U restaurante -d postgres -c 'CREATE DATABASE restaurante_e2e_test'
+      - name: Install browser
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+      - name: Production build E2E
+        working-directory: frontend
+        env:
+          TEST_DATABASE_URL: postgresql+psycopg://restaurante:restaurante@localhost:5433/restaurante_e2e_test
+        run: npm run test:e2e
+      - name: Keep failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-failure
+          path: frontend/test-results/
+          retention-days: 7

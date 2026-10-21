@@ -52,6 +52,7 @@ class ItemUpdate(BaseModel):
 
 class ItemCancelRequest(BaseModel):
     reason: str | None = Field(default=None, max_length=500)
+    client_operation_id: UUID | None = None
 
 
 class ItemStatusRequest(BaseModel):

@@ -5,6 +5,7 @@ Uso:  python -m scripts.seed
 
 from decimal import Decimal
 
+from app.config import settings
 from app.core.security import hash_pin
 from app.db import SessionLocal
 from app.models import MenuCategory, MenuItem, RestaurantTable, User
@@ -44,6 +45,8 @@ MENU = {
 
 
 def run() -> None:
+    if settings.is_production:
+        raise RuntimeError("El seed demo está prohibido en producción. Use scripts.bootstrap_admin.")
     db = SessionLocal()
     try:
         if db.query(User).first() is not None:

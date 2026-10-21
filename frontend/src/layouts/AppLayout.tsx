@@ -98,7 +98,7 @@ export function AppLayout() {
           className="header-user-button"
           onClick={async () => {
             await logout();
-            navigate("/login");
+            if (!useSession.getState().user) navigate("/login");
           }}
           title={`Cerrar sesión${user?.display_name ? ` de ${user.display_name}` : ""}`}
           aria-label="Cerrar sesión"

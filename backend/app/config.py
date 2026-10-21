@@ -1,5 +1,6 @@
+import os
 from functools import lru_cache
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -27,6 +28,7 @@ class Settings(BaseSettings):
     supabase_storage_bucket: str = "receipts"
 
     frontend_url: str = "http://localhost:5173"
+    allowed_hosts: str = "localhost,127.0.0.1,testserver"
 
     login_max_attempts: int = 5
     login_lockout_minutes: int = 5
@@ -64,15 +66,46 @@ class Settings(BaseSettings):
     def active_database_url(self) -> str:
         if self.database_env == "test":
             return self.require_test_database()
-        return self.database_url
+        return self.database_url.replace("postgres://", "postgresql+psycopg://", 1).replace(
+            "postgresql://",
+            "postgresql+psycopg://",
+            1,
+        )
+
+    @property
+    def is_production(self) -> bool:
+        return self.environment not in {"development", "test"}
 
     def validate_production_security(self) -> None:
         if self.environment in {"development", "test"}:
             return
-        if self.jwt_secret == "dev-secret-cambiar" or len(self.jwt_secret) < 32:
+        if self.environment not in {"production", "production-pilot"}:
+            raise RuntimeError("ENVIRONMENT debe ser development, test, production-pilot o production.")
+        if len(self.jwt_secret) < 32 or any(
+            word in self.jwt_secret.lower() for word in ("dev-secret", "cambie", "cambiar", "change-me", "example")
+        ):
             raise RuntimeError("JWT_SECRET seguro (mínimo 32 caracteres) es obligatorio fuera de desarrollo.")
         if not self.supabase_url or not self.supabase_service_key:
             raise RuntimeError("Supabase Storage es obligatorio fuera de desarrollo.")
+        if not self.supabase_url.startswith("https://"):
+            raise RuntimeError("SUPABASE_URL debe usar HTTPS.")
+        if self.database_env == "test":
+            raise RuntimeError("DATABASE_ENV=test está prohibido en producción.")
+        if parse_qs(urlparse(self.active_database_url).query).get("sslmode", [""])[0] not in {
+            "require",
+            "verify-ca",
+            "verify-full",
+        }:
+            raise RuntimeError("DATABASE_URL de producción requiere sslmode=require o verificación de certificado.")
+        origins = self.cors_origin_list
+        if not origins or any(not o.startswith("https://") or urlparse(o).path not in {"", "/"} for o in origins):
+            raise RuntimeError("CORS_ORIGINS debe contener orígenes HTTPS explícitos.")
+        if self.frontend_url.rstrip("/") not in origins:
+            raise RuntimeError("FRONTEND_URL debe estar en CORS_ORIGINS.")
+        if "*" in self.allowed_hosts or self.allowed_hosts == "localhost,127.0.0.1,testserver":
+            raise RuntimeError("ALLOWED_HOSTS debe indicar los dominios reales del backend.")
+        if os.getenv("WEB_CONCURRENCY", "1") != "1":
+            raise RuntimeError("WebSocket V1 requiere WEB_CONCURRENCY=1.")
 
 
 @lru_cache

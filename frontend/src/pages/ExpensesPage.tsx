@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { expensesApi, uploadReceipt } from "../api/endpoints";
+import { expensesApi, openReceipt, uploadReceipt } from "../api/endpoints";
 import { Spinner, EmptyState } from "../components/Layout";
 import { money } from "../hooks/useElapsed";
 import { errorMessage, sendOrQueue } from "../lib/send";
@@ -41,7 +41,7 @@ export function ExpensesPage() {
           method: "POST",
           body: payload,
         },
-        () => expensesApi.create(payload),
+        (operationId) => expensesApi.create(payload, operationId),
       );
       if (!outcome.queued) {
         toast("success", "Gasto registrado");
@@ -133,9 +133,11 @@ export function ExpensesPage() {
                   <td>{money(expense.amount)}</td>
                   <td>
                     {expense.receipt_url ? (
-                      <a className="chip info" href={expense.receipt_url} target="_blank" rel="noreferrer">
+                      <button className="chip info" onClick={() => void openReceipt(expense.receipt_url!).catch(
+                        (error) => toast("error", "No se pudo abrir el comprobante", errorMessage(error)),
+                      )}>
                         ver
-                      </a>
+                      </button>
                     ) : (
                       <span className="hint">—</span>
                     )}

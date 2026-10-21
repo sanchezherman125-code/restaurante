@@ -48,13 +48,7 @@ def _authorize_billing(user, order: Order) -> None:
 
 
 def _lock_order(db, order_id: UUID) -> Order:
-    order = (
-        db.query(Order)
-        .filter(Order.id == order_id)
-        .populate_existing()
-        .with_for_update(of=Order)
-        .one_or_none()
-    )
+    order = db.query(Order).filter(Order.id == order_id).populate_existing().with_for_update(of=Order).one_or_none()
     if order is None:
         raise NotFoundError("ORDER_NOT_FOUND", "Pedido no encontrado.")
     return order
@@ -121,10 +115,18 @@ def create_split(order_id: UUID, payload: SplitCreate, db: DbSession, user: Curr
     existing_split_total = (
         db.query(func.coalesce(func.sum(BillSplit.amount), 0)).filter(BillSplit.order_id == order.id).scalar()
     )
+    split_payments = (
+        db.query(func.coalesce(func.sum(Payment.amount), 0))
+        .filter(
+            Payment.order_id == order.id,
+            Payment.split_id.is_not(None),
+        )
+        .scalar()
+    )
+    available = pending - (Decimal(existing_split_total) - Decimal(split_payments))
 
     if payload.split_type == SplitType.BY_AMOUNT:
         amount = payload.amount
-        available = pending - Decimal(existing_split_total)
         if amount > available:
             raise ValidationAppError(
                 "SPLIT_EXCEEDS_PENDING",
@@ -156,11 +158,11 @@ def create_split(order_id: UUID, payload: SplitCreate, db: DbSession, user: Curr
                 )
             allocated[item.id] = already + entry.quantity
             amount += item.unit_price_snapshot * entry.quantity
-        if Decimal(existing_split_total) + amount > pending:
+        if amount > available:
             raise ValidationAppError(
                 "SPLIT_EXCEEDS_TOTAL",
                 "La suma de divisiones no puede exceder el total pendiente.",
-                {"pending": str(pending - Decimal(existing_split_total))},
+                {"pending": str(available)},
             )
         split = BillSplit(
             order_id=order.id,
@@ -222,6 +224,15 @@ def register_payment(
             split = db.get(BillSplit, payload.split_id)
             if split is None or split.order_id != locked_order.id:
                 raise ValidationAppError("SPLIT_NOT_IN_ORDER", "La división no pertenece a este pedido.")
+            split_paid = (
+                db.query(func.coalesce(func.sum(Payment.amount), 0))
+                .filter(
+                    Payment.split_id == split.id,
+                )
+                .scalar()
+            )
+            if payload.amount > split.amount - Decimal(split_paid):
+                raise ValidationAppError("PAYMENT_EXCEEDS_SPLIT", "El pago supera el saldo de esta división.")
         db.add(payment)
         locked_order.paid_amount = locked_order.paid_amount + payload.amount
         became_paid = locked_order.paid_amount >= locked_order.total
@@ -249,12 +260,15 @@ def register_payment(
         body["became_paid"] = became_paid
         return 201, body
 
-    status, body = execute_idempotent(db, payload.client_operation_id, user.id, "REGISTER_PAYMENT", operation)
+    status, body = execute_idempotent(
+        db, payload.client_operation_id, user.id, "REGISTER_PAYMENT", operation, scope=str(order_id),
+    )
     if body.get("became_paid"):
         hub.broadcast(
             "order.paid",
             {
                 "order_id": str(order.id),
+                "created_by_waiter_id": str(order.created_by_waiter_id),
                 "paid_amount": str(body.get("paid_amount", order.paid_amount)),
                 "status": body["order_status"],
             },

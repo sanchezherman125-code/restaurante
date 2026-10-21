@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type { QueuedOperation, SyncStatus } from "../types/api";
 import { flushQueue, getBackoffMs, retryOperation, discardOperation } from "../offline/queue";
 import { clearSynced, listOperations, onQueueChange, recoverInterruptedOperations } from "../offline/queue-db";
+import { useSession } from "./session";
 
 interface QueueState {
   operations: QueuedOperation[];
@@ -15,34 +16,39 @@ interface QueueState {
   setOnline: (online: boolean) => void;
 }
 
+async function currentOperations(): Promise<QueuedOperation[]> {
+  const userId = useSession.getState().user?.id;
+  return (await listOperations()).filter((op) => !op.owner_user_id || op.owner_user_id === userId);
+}
+
 export const useQueue = create<QueueState>((set, get) => ({
   operations: [],
   flushing: false,
   online: typeof navigator === "undefined" ? true : navigator.onLine,
   refresh: async () => {
-    set({ operations: await listOperations() });
+    set({ operations: await currentOperations() });
   },
   flush: async () => {
-    if (get().flushing) return;
+    if (get().flushing || !useSession.getState().user) return;
     set({ flushing: true });
     try {
       await flushQueue();
     } finally {
-      set({ flushing: false, operations: await listOperations() });
+      set({ flushing: false, operations: await currentOperations() });
     }
   },
   retry: async (id) => {
     await retryOperation(id);
-    set({ operations: await listOperations() });
+    set({ operations: await currentOperations() });
     void get().flush();
   },
   discard: async (id) => {
     await discardOperation(id);
-    set({ operations: await listOperations() });
+    set({ operations: await currentOperations() });
   },
   clearSynced: async () => {
     await clearSynced();
-    set({ operations: await listOperations() });
+    set({ operations: await currentOperations() });
   },
   setOnline: (online) => set({ online }),
 }));
@@ -64,6 +70,13 @@ export function hasUnsynced(operations: QueuedOperation[]): boolean {
 
 onQueueChange(() => {
   void useQueue.getState().refresh();
+});
+
+useSession.subscribe((state, previous) => {
+  if (state.user?.id !== previous.user?.id) {
+    void useQueue.getState().refresh();
+    if (state.user) void useQueue.getState().flush();
+  }
 });
 
 let started = false;
@@ -88,12 +101,14 @@ export function startQueueSync(): void {
     if (document.visibilityState === "visible") void useQueue.getState().flush();
   });
 
-  setInterval(() => {
+  const tick = async () => {
     if (useQueue.getState().operations.some((op) => op.status === "LOCAL_PENDING")) {
-      void useQueue.getState().flush();
+      await useQueue.getState().flush();
     } else {
-      void useQueue.getState().refresh();
+      await useQueue.getState().refresh();
     }
-  }, Math.max(15000, getBackoffMs() + 5000));
+    window.setTimeout(() => void tick(), Math.max(15000, getBackoffMs() + 1000));
+  };
+  window.setTimeout(() => void tick(), 15000);
 
 }

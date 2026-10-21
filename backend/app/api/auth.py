@@ -1,8 +1,10 @@
+from datetime import UTC, datetime
+
 from fastapi import APIRouter, Request, Response
 
 from app.core import audit as audit_actions
 from app.core import login_rate
-from app.core.deps import CurrentUser, DbSession
+from app.core.deps import CurrentUser, DbSession, _extract_token
 from app.core.errors import UnauthorizedError
 from app.core.security import (
     decode_token,
@@ -12,7 +14,7 @@ from app.core.security import (
 )
 from app.models import User
 from app.schemas.auth import LoginRequest, RefreshRequest, TokenResponse, UserOut
-from app.services.auth import issue_tokens
+from app.services.auth import issue_tokens, validate_session
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -43,7 +45,7 @@ def login(payload: LoginRequest, request: Request, db: DbSession, response: Resp
         entity_id=user.id,
         after_data={"username": user.username, "role": user.role},
     )
-    tokens = issue_tokens(user)
+    tokens = issue_tokens(db, user)
     db.commit()
 
     response.headers["Cache-Control"] = "no-store"
@@ -51,18 +53,27 @@ def login(payload: LoginRequest, request: Request, db: DbSession, response: Resp
 
 
 @router.post("/refresh", response_model=TokenResponse)
-def refresh(payload: RefreshRequest, db: DbSession) -> TokenResponse:
+def refresh(payload: RefreshRequest, db: DbSession, response: Response) -> TokenResponse:
     data = decode_token(payload.refresh_token, expected_type="refresh")
+    session = validate_session(db, data, lock=True)
+    if session.refresh_jti != data["jti"]:
+        raise UnauthorizedError("INVALID_TOKEN", "El token de renovación ya fue utilizado.")
     user = db.get(User, __import__("uuid").UUID(data["sub"]))
     if user is None or not user.is_active:
         raise UnauthorizedError("INVALID_TOKEN", "Sesión inválida.")
-    return issue_tokens(user)
+    tokens = issue_tokens(db, user, session)
+    db.commit()
+    response.headers["Cache-Control"] = "no-store"
+    return tokens
 
 
 @router.post("/logout", status_code=204)
-def logout(response: Response) -> Response:
-    response.headers["Cache-Control"] = "no-store"
-    return Response(status_code=204)
+def logout(request: Request, db: DbSession, user: CurrentUser) -> Response:
+    payload = decode_token(_extract_token(request, request.headers.get("authorization")))
+    session = validate_session(db, payload, lock=True)
+    session.revoked_at = datetime.now(UTC)
+    db.commit()
+    return Response(status_code=204, headers={"Cache-Control": "no-store"})
 
 
 @router.get("/me", response_model=UserOut)

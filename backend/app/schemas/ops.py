@@ -8,7 +8,7 @@ from app.models.enums import PreparationArea, ShiftStatus
 
 
 class ExpenseCreate(BaseModel):
-    amount: Decimal = Field(gt=0)
+    amount: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
     description: str = Field(min_length=1, max_length=500)
     receipt_url: str | None = Field(default=None, max_length=1000)
     client_operation_id: UUID | None = None

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NetworkError } from "../api/client";
+import { ApiError, NetworkError } from "../api/client";
 import { flushQueue, resetBackoff } from "../offline/queue";
 import { deleteOperation, listOperations } from "../offline/queue-db";
 import { sendOrQueue } from "./send";
@@ -11,6 +11,14 @@ beforeEach(async () => {
 });
 
 describe("sendOrQueue", () => {
+  it("conserva una operación cuando un error 5xx deja el resultado incierto", async () => {
+    const outcome = await sendOrQueue({ operation_type: "REGISTER_EXPENSE", path: "/api/v1/expenses",
+      method: "POST", body: { amount: "5.00", description: "Hielo" } }, async () => {
+      throw new ApiError(502, "HTTP_ERROR", "Gateway error");
+    });
+    expect(outcome.queued).toBe(true);
+    expect((await listOperations())[0].client_operation_id).toBe(outcome.operationId);
+  });
   it("reintenta una respuesta perdida con el UUID del primer intento", async () => {
     let processed = 0;
     let firstOperationId = "";

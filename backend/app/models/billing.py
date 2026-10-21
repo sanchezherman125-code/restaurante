@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, String, UniqueConstraint, func
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, Numeric, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -11,6 +11,7 @@ from app.models.users import uuid_pk
 
 class BillSplit(Base):
     __tablename__ = "bill_splits"
+    __table_args__ = (CheckConstraint("amount > 0", name="ck_bill_split_amount"),)
 
     id: Mapped[uuid.UUID] = uuid_pk()
     order_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("orders.id"), index=True)
@@ -27,7 +28,10 @@ class BillSplit(Base):
 
 class BillSplitItem(Base):
     __tablename__ = "bill_split_items"
-    __table_args__ = (UniqueConstraint("split_id", "order_item_id", name="uq_split_item"),)
+    __table_args__ = (
+        UniqueConstraint("split_id", "order_item_id", name="uq_split_item"),
+        CheckConstraint("quantity > 0 AND amount > 0", name="ck_bill_split_item_amount_quantity"),
+    )
 
     id: Mapped[uuid.UUID] = uuid_pk()
     split_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("bill_splits.id"), index=True)
@@ -40,6 +44,7 @@ class BillSplitItem(Base):
 
 class Payment(Base):
     __tablename__ = "payments"
+    __table_args__ = (CheckConstraint("amount > 0", name="ck_payment_amount"),)
 
     id: Mapped[uuid.UUID] = uuid_pk()
     order_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("orders.id"), index=True)

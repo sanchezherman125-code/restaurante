@@ -7,6 +7,7 @@ import { money } from "../hooks/useElapsed";
 import { ApiError, NetworkError } from "../api/client";
 import { errorMessage } from "../lib/send";
 import { useUi } from "../stores/ui";
+import { useSession } from "../stores/session";
 import type { PaymentMethod, SplitType } from "../types/api";
 
 const METHODS: { value: PaymentMethod; label: string }[] = [
@@ -22,11 +23,15 @@ export function BillingPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const toast = useUi((state) => state.toast);
+  const userId = useSession((state) => state.user?.id ?? "");
+  const paymentAttemptKey = `restaurante.payment.${userId}.${orderId}`;
+  const [uncertainPayment, setUncertainPayment] = useState(() => !!localStorage.getItem(paymentAttemptKey));
 
   const billing = useQuery({
     queryKey: ["billing", orderId],
     queryFn: () => billingApi.get(orderId),
     enabled: !!orderId,
+    refetchInterval: 15000,
     retry: false,
   });
 
@@ -86,16 +91,23 @@ export function BillingPage() {
     if (!data) return;
     setBusy(true);
     try {
+      const request = JSON.parse(localStorage.getItem(paymentAttemptKey) ?? "null") as Record<string, unknown> | null;
       const amount = Number(payAmount || pending.toFixed(2));
-      if (!Number.isFinite(amount) || amount <= 0) {
+      if (!request && (!Number.isFinite(amount) || amount <= 0)) {
         toast("error", "Ingrese un monto válido");
         return;
       }
-      const result = await billingApi.createPayment(orderId, {
+      const payload = request ?? {
         method,
         amount: amount.toFixed(2),
         client_operation_id: crypto.randomUUID(),
-      });
+      };
+      // Preserve the exact operation across a lost response, retry and page reload.
+      localStorage.setItem(paymentAttemptKey, JSON.stringify(payload));
+      setUncertainPayment(true);
+      const result = await billingApi.createPayment(orderId, payload);
+      localStorage.removeItem(paymentAttemptKey);
+      setUncertainPayment(false);
       toast("success", "Pago registrado", result.became_paid ? "Pedido pagado en su totalidad" : undefined);
       setPayAmount("");
       void queryClient.invalidateQueries({ queryKey: ["billing", orderId] });
@@ -103,8 +115,12 @@ export function BillingPage() {
       void queryClient.invalidateQueries({ queryKey: ["tables"] });
     } catch (error) {
       if (error instanceof NetworkError) {
-        toast("error", "Sin conexión", "Los pagos requieren conexión al servidor. Intente de nuevo.");
+        toast("warning", "Pago por verificar", "La respuesta no llegó. Reintente para verificar el mismo pago sin duplicarlo.");
       } else if (error instanceof ApiError) {
+        if (error.status < 500 && error.status !== 401) {
+          localStorage.removeItem(paymentAttemptKey);
+          setUncertainPayment(false);
+        }
         toast("error", "Pago rechazado", error.message);
       } else {
         toast("error", "No se pudo registrar el pago", errorMessage(error));
@@ -128,6 +144,10 @@ export function BillingPage() {
 
   return (
     <div className="stack">
+      {uncertainPayment ? <div className="card">
+        <p>Hay un pago cuya respuesta quedó pendiente. Verifique ese pago antes de registrar otro.</p>
+        <button className="btn" disabled={busy} onClick={() => void registerPayment()}>Verificar pago pendiente</button>
+      </div> : null}
       <div className="card">
         <div className="row wrap">
           <div className="grow">

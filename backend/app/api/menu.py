@@ -86,7 +86,7 @@ def create_item(payload: MenuItemCreate, db: DbSession, _: AdminUser) -> MenuIte
 
 
 @router.patch("/items/{item_id}", response_model=MenuItemOut)
-def update_item(item_id: UUID, payload: MenuItemUpdate, db: DbSession, _: AdminUser) -> MenuItemOut:
+def update_item(item_id: UUID, payload: MenuItemUpdate, db: DbSession, admin: AdminUser) -> MenuItemOut:
     item = db.get(MenuItem, item_id)
     if item is None:
         raise NotFoundError("MENU_ITEM_NOT_FOUND", "Producto no encontrado.")
@@ -104,7 +104,7 @@ def update_item(item_id: UUID, payload: MenuItemUpdate, db: DbSession, _: AdminU
     if "price" in data and data["price"] is not None and data["price"] != item.price:
         audit_actions.audit(
             db,
-            user_id=None,
+            user_id=admin.id,
             action=audit_actions.MENU_PRICE_CHANGED,
             entity_type="menu_items",
             entity_id=item.id,

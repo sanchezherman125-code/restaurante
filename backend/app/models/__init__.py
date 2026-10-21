@@ -9,9 +9,13 @@ from app.models.operations import (
     Shift,
 )
 from app.models.orders import Command, Order, OrderItem
+from app.models.receipts import Receipt
+from app.models.sessions import AuthSession
 from app.models.users import PushSubscription, RestaurantTable, User
 
 __all__ = [
+    "AuthSession",
+    "Receipt",
     "AuditLog",
     "BillSplit",
     "BillSplitItem",

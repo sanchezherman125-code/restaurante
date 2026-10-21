@@ -48,7 +48,13 @@ export default defineConfig(({ mode }) => {
         "/health": { target: apiProxyTarget, changeOrigin: true },
       },
     },
-    preview: { port: 4173 },
+    preview: {
+      port: 4173,
+      proxy: {
+        "/api": { target: apiProxyTarget, changeOrigin: true, ws: true },
+        "/uploads": { target: apiProxyTarget, changeOrigin: true },
+      },
+    },
     build: { outDir: "dist", sourcemap: false },
   };
 });

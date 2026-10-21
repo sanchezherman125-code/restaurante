@@ -4,6 +4,7 @@ from decimal import Decimal
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -24,6 +25,9 @@ from app.models.users import uuid_pk
 class Order(Base):
     __tablename__ = "orders"
     __table_args__ = (
+        CheckConstraint(
+            "subtotal >= 0 AND total >= 0 AND paid_amount >= 0 AND paid_amount <= total", name="ck_order_money"
+        ),
         Index(
             "uq_orders_active_dine_in_table",
             "table_id",
@@ -76,13 +80,16 @@ class Order(Base):
 
 class Command(Base):
     __tablename__ = "commands"
-    __table_args__ = (UniqueConstraint("order_id", "sequence_number", name="uq_command_seq"),)
+    __table_args__ = (
+        UniqueConstraint("order_id", "sequence_number", name="uq_command_seq"),
+        UniqueConstraint("client_operation_id", name="commands_client_operation_id_key"),
+    )
 
     id: Mapped[uuid.UUID] = uuid_pk()
     order_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("orders.id"), index=True)
     sequence_number: Mapped[int] = mapped_column(Integer)
     created_by_user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
-    client_operation_id: Mapped[uuid.UUID | None] = mapped_column(unique=True, nullable=True, index=True)
+    client_operation_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -94,6 +101,9 @@ class Command(Base):
 
 class OrderItem(Base):
     __tablename__ = "order_items"
+    __table_args__ = (
+        CheckConstraint("quantity > 0 AND unit_price_snapshot >= 0", name="ck_order_item_money_quantity"),
+    )
 
     id: Mapped[uuid.UUID] = uuid_pk()
     command_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("commands.id"), index=True)

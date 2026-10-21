@@ -1,118 +1,123 @@
-# Despliegue y operación
+# Despliegue de producción
 
-## 1. Entornos (§80)
+La configuración reproducible está en [render.yaml](../render.yaml) y
+[.env.production.example](../.env.production.example). La aplicación se despliega como
+API Python en Render, frontend estático en Render, PostgreSQL y Storage privado en Supabase.
+La validación local no equivale a una publicación ni a una verificación del entorno remoto.
 
-```text
-development
-production-pilot
-```
+## Primera publicación
 
-No se mantiene un staging independiente en V1.
+1. En Supabase, prepare una base vacía o una copia revisada de los datos existentes.
+   Use conexión directa o session pooler con `sslmode=require` (preferiblemente
+   `verify-full` con CA). Evite el transaction pooler para las migraciones.
+   El usuario de conexión debe ser dueño de las tablas, o un rol backend privado con BYPASSRLS.
+   Ninguna clave de servicio ni cadena de conexión se configura en el frontend.
+2. Cree el bucket `receipts` como **privado**. Si ya existía un bucket público,
+   conviértalo a privado antes de publicar y revise las URLs históricas.
+   Configure límite de 5 MiB y tipos JPEG, PNG, WebP y PDF.
+3. Complete las variables solicitadas por el Blueprint:
+   - API: `DATABASE_URL`, `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`,
+     `CORS_ORIGINS`, `FRONTEND_URL`, `ALLOWED_HOSTS`, `ADMIN_USERNAME`, `ADMIN_PIN`.
+   - Frontend: `VITE_API_URL=https://URL-DEL-API`, sin barra final ni sufijo `/api`.
+   - `CORS_ORIGINS` incluye el origen exacto HTTPS del frontend, sin barra final.
+     `FRONTEND_URL` usa ese mismo origen.
+   - `ALLOWED_HOSTS` contiene el hostname del API, sin esquema.
+   - Render genera `JWT_SECRET`. No sustituya este secreto por ejemplos.
+   - El PIN inicial debe tener entre 6 y 10 dígitos y ser privado.
+4. Suba los cambios al repositorio y sincronice el Blueprint con Render. Los nombres
+   `restaurante-api` y `restaurante-front` deben revisarse si ya existen servicios;
+   el Blueprint podría asociarse con ellos. El API usa un plan de cómputo pagado.
+5. El predeploy ejecuta `alembic upgrade head` y `scripts.bootstrap_admin`.
+   En una instalación vacía crea sólo al administrador. Si ya existe, no altera cuentas.
+   Configure mesas, carta y personal desde la aplicación. **El seed demo está bloqueado
+   en producción.**
+6. Quite `ADMIN_PIN` y `ADMIN_USERNAME` de las variables una vez creado el administrador.
+   Los siguientes predeploy no los necesitan. Las cuentas demo activas con PIN `1234`
+   deben cambiarse o desactivarse antes del arranque.
+   Para una instalación existente que aún use esas claves, ejecute primero las migraciones
+   y use `python -m scripts.rotate_pin` en una consola privada (solicita usuario y PIN sin
+   mostrarlo). Revoca las sesiones anteriores y conserva todos los datos de negocio.
+7. El arranque verifica migraciones, administrador, configuración segura y bucket privado.
+   `GET /ready` devuelve 200 sólo con acceso a la base; `/health` comprueba el proceso.
+   La documentación interactiva del API queda desactivada en producción.
 
-| | Desarrollo | Piloto |
-|---|---|---|
-| Backend | `uvicorn` local en `:8000` | Render (Web Service) |
-| Base de datos | Docker `postgres:16` (`.env` local) | Supabase (PostgreSQL) |
-| Storage de comprobantes | disco local (`backend/uploads/`) | Supabase Storage (`receipts`) |
-| Frontend | `vite dev` en `:5173` | build estático (`dist`) en Render Static Site u otro hosting estático |
+Los valores `sync: false` se solicitan en la creación inicial; una sincronización posterior
+no los actualiza automáticamente. El frontend necesita reconstruirse si cambia `VITE_API_URL`.
 
-Durante el piloto se usa una URL temporal/subdominio; no se compra infraestructura adicional
-hasta validar el sistema (§78).
+## Topología soportada
 
-## 2. Variables de entorno (§77)
+V1 funciona con **una instancia y un worker**. `render.yaml` declara `numInstances: 1`;
+`python -m scripts.start` fija `workers=1` y rechaza `WEB_CONCURRENCY` distinto de 1.
+No habilite autoscaling ni otro comando de arranque. Para servicios existentes, confirme que
+autoscaling esté desactivado en el Dashboard: `numInstances` no lo reemplaza.
 
-Plantilla en [`.env.example`](../.env.example). **Nunca subir `.env`** (está en `.gitignore`).
+El hub de WebSocket está en memoria. Los eventos se publican después del commit y los clientes
+resincronizan por REST al reconectar, con consulta periódica de pedidos cada 15 segundos.
+Los reinicios o el breve solapamiento de un despliegue pueden retrasar una notificación;
+la base conserva el pedido. Múltiples instancias permanentes requieren un broker compartido.
 
-| Variable | Descripción | Ejemplo |
-|---|---|---|
-| `ENVIRONMENT` | `development` / `production-pilot` / `test` | `development` |
-| `LOG_LEVEL` | nivel de logging | `INFO` |
-| `DATABASE_URL` | SQLAlchemy (`postgresql+psycopg://…`) | `…@localhost:5432/restaurante` |
-| `DATABASE_URL_TEST` | base de tests (`:5433`) | `…@localhost:5433/restaurante_test` |
-| `JWT_SECRET` | secreto HS256 (**obligatorio en producción**, ≥ 32 bytes) | — |
-| `JWT_ACCESS_TOKEN_MINUTES` | vigencia del access token | `30` |
-| `JWT_REFRESH_TOKEN_DAYS` | vigencia del refresh token | `14` |
-| `CORS_ORIGINS` | orígenes permitidos, coma-separados | `https://mi-piloto.onrender.com` |
-| `SUPABASE_URL` / `SUPABASE_SERVICE_KEY` / `SUPABASE_STORAGE_BUCKET` | storage de comprobantes | — |
-| `FRONTEND_URL` | URL del front (enlaces/refresh) | `https://…` |
-| `LOGIN_MAX_ATTEMPTS` / `LOGIN_LOCKOUT_MINUTES` | rate limit de login | `5` / `5` |
-| `BUSINESS_TIMEZONE` | zona horaria de reportes | `America/Lima` |
+## Actualización de una instalación existente
 
-Frontend (build de Vite):
+1. Realice y verifique un backup antes de migrar.
+2. Ejecute primero las pruebas en una copia aislada.
+3. La migración 0004 agrega la imagen de carta y alinea nulabilidad e índices.
+   La 0005 añade sesiones revocables, comprobantes privados, restricciones monetarias,
+   un único turno abierto y protección de tablas frente al Data API.
+4. Si existen totales negativos, sobrepagos, divisiones de monto cero o varios turnos abiertos,
+   la migración aborta. Reconcilie esos registros con el responsable del negocio y vuelva
+   a ejecutarla; la migración no reescribe importes históricos.
+5. Las sesiones anteriores dejan de ser válidas: el personal debe iniciar sesión otra vez.
+   Sincronice antes de actualizar cualquier dispositivo con operaciones locales pendientes.
+   Las operaciones antiguas sin usuario identificado quedan para revisión explícita.
+6. Las tablas habilitan RLS sin políticas públicas: la autorización se hace en FastAPI.
+   No conceda acceso directo a `anon`/`authenticated` para estas tablas.
+7. Los comprobantes nuevos se consultan por API con usuario propietario o administrador.
+   Para comprobantes locales anteriores, la ruta `/uploads` exige autenticación.
+   Si había archivos sólo en el disco de otro servidor, muévalos al Storage privado antes
+   de reemplazar ese servidor; el Blueprint no transfiere archivos históricos.
 
-| Variable | Descripción |
-|---|---|
-| `VITE_API_URL` | base del API; si se omite se usan rutas relativas (proxy en dev, mismo origen en piloto) |
+## Backups y recuperación
 
-## 3. Despliegue del piloto
+En producción configure backup diario y retención en Supabase, y conserve una copia fuera del
+servidor de aplicación. Habilite PITR cuando el objetivo de recuperación del negocio lo requiera.
+Los backups de PostgreSQL no sustituyen el respaldo de los **objetos** de Storage:
+respalde también el bucket privado de comprobantes.
 
-### Backend (Render)
-
-1. Crear *Web Service* desde el repositorio con root directory `backend`.
-2. Configurar variables de entorno (§2) apuntando a Supabase.
-3. Orden de arranque:
-
-```bash
-pip install -r requirements.txt
-alembic upgrade head
-uvicorn app.main:app --host 0.0.0.0 --port $PORT
-```
-
-4. Verificar `GET /health` y `GET /api/docs`.
-
-### Base de datos (Supabase)
-
-- Crear el proyecto, obtener la cadena de conexión y usar el sufijo
-  `postgresql+psycopg://user:pass@host:5432/db`.
-- Aplicar las migraciones con `alembic upgrade head` (desde el entorno que tenga acceso a la BD).
-- Activar backup/pitr según §79.
-
-### Frontend
-
-```bash
-cd frontend
-npm ci
-npm run build       # genera frontend/dist (HTML + service worker + manifest)
-```
-
-Publicar `dist` como sitio estático. Configurar `VITE_API_URL` en tiempo de build si el API
-está en otro dominio (y habilitar ese origen en `CORS_ORIGINS`).
-
-### Storage de comprobantes
-
-Con `SUPABASE_URL` + `SUPABASE_SERVICE_KEY` vacíos, los comprobantes se guardan en
-`backend/uploads/` (sirve el *Mount* `/uploads`). En piloto se recomienda Supabase Storage
-bucket `receipts`.
-
-### WebSocket V1
-
-El hub WebSocket V1 está deliberadamente limitado a **una instancia y un worker de Uvicorn**.
-No configure `--workers` ni escale horizontalmente este servicio: hacerlo requiere un broker
-compartido y queda fuera del alcance V1. El cliente siempre resincroniza por REST al reconectar.
-
-## 4. Operación
-
-- **Logs:** formato estándar de uvicorn/`logging` con `LOG_LEVEL`; nunca se registran PIN,
-  hashes, tokens ni secretos (§66).
-- **Errores:** todos los responses de error siguen `{error: {code, message, details}}` (§75).
-- **Health:** `GET /health` → `{"status":"ok"}` para el check de Render.
-- **WebSockets:** el hosting debe permitir conexiones WS largas (Render lo hace en el
-  servicio web; verificar durante el piloto).
-
-## 5. Backups (§79)
-
-- Piloto: backup **semanal** (dump de Supabase o `pg_dump`) + documento de restauración.
-- Antes de producción real: evaluar backup **diario** y probar la restauración.
-
-Procedimiento mínimo documentado:
+Para un dump manual, use las variables PostgreSQL nativas (`PGHOST`, `PGPORT`,
+`PGUSER`, `PGPASSWORD`, `PGDATABASE`, `PGSSLMODE=require`) en un entorno privado.
+No pase la URL `postgresql+psycopg://` directamente a `pg_dump` ni imprima secretos.
 
 ```bash
-pg_dump "$DATABASE_URL" -Fc -f restaurante-$(date +%F).dump
-# restauración
-pg_restore --clean --if-exists -d "$DATABASE_URL" restaurante-2026-10-02.dump
+pg_dump --format=custom --file=restaurante.dump
+pg_restore --list restaurante.dump
 ```
 
-## 6. Git (§81)
+Pruebe la restauración **en una base nueva y aislada**, nunca sobre la base activa:
 
-Commits pequeños con prefijo `feat:` / `fix:` / `test:` / `refactor:` / `docs:` / `chore:`.
-No commitear `.env`, credenciales ni volúmenes de datos.
+```bash
+# Configure PGDATABASE a la base nueva antes de este comando.
+pg_restore --exit-on-error --no-owner --no-privileges --dbname="$PGDATABASE" restaurante.dump
+```
+
+Compruebe migraciones, conteos de pedidos/pagos y acceso autenticado a comprobantes restaurados.
+Registre fecha, duración y responsable de la prueba. Proteja los dumps y elimínelos según la
+retención acordada. No revierta migraciones financieras sobre la base en uso para hacer rollback:
+restaure una copia validada o aplique una corrección hacia adelante.
+
+## Aceptación en el entorno real
+
+Antes de abrir al personal: verifique HTTPS, CORS, cuatro roles en dispositivos separados,
+pedido cocina/parrilla, entrega, pago parcial/total, cierre de turno y reporte.
+Pruebe pérdida de Wi-Fi y recuperación sin duplicados, instalación PWA en los móviles reales,
+subida/lectura privada de comprobantes y reinicio del API con reconexión.
+Configure monitoreo de `/ready`, alertas de errores/almacenamiento y responsable de recuperación.
+
+Las comprobaciones automáticas se ejecutan en [CI](../.github/workflows/ci.yml).
+El despliegue automático espera checks aprobados. La prueba local de backup/restauración
+verifica el procedimiento técnico; los backups remotos deben quedar configurados y comprobados
+con las credenciales reales.
+
+Referencias vigentes consultadas: [Blueprints de Render](https://render.com/docs/blueprint-spec),
+[variables de Render](https://render.com/docs/configure-environment-variables),
+[Storage privado](https://supabase.com/docs/guides/storage/serving/downloads)
+y [seguridad del Data API](https://supabase.com/docs/guides/api/securing-your-api).

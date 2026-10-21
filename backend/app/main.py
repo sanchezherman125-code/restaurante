@@ -7,7 +7,8 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
+from sqlalchemy import text
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app.api import (
     auth,
@@ -36,6 +37,10 @@ async def lifespan(app: FastAPI):
     import asyncio
 
     hub.set_loop(asyncio.get_running_loop())
+    if settings.is_production:
+        from app.production import check_production
+
+        await asyncio.to_thread(check_production)
     yield
     hub.set_loop(None)
 
@@ -46,10 +51,11 @@ def create_app() -> FastAPI:
         title="Sistema de Gestión de Pedidos — Restaurante",
         version="1.0.0",
         lifespan=lifespan,
-        docs_url="/api/docs",
-        openapi_url="/api/openapi.json",
+        docs_url=None if settings.is_production else "/api/docs",
+        openapi_url=None if settings.is_production else "/api/openapi.json",
         redoc_url=None,
     )
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=[h.strip() for h in settings.allowed_hosts.split(",")])
 
     app.add_middleware(
         CORSMiddleware,
@@ -70,6 +76,10 @@ def create_app() -> FastAPI:
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "no-referrer"
+        if request.url.path.startswith("/api") or request.url.path.startswith("/uploads"):
+            response.headers["Cache-Control"] = "no-store"
+        if settings.is_production:
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
         if request.url.path.startswith("/api"):
             logger.info(
                 "request_id=%s route=%s %s status=%s duration_ms=%s",
@@ -124,6 +134,15 @@ def create_app() -> FastAPI:
     def health() -> dict:
         return {"status": "ok", "environment": settings.environment}
 
+    @app.get("/ready", tags=["system"])
+    def ready() -> JSONResponse:
+        try:
+            with engine.connect() as connection:
+                connection.execute(text("SELECT 1"))
+        except Exception:
+            return JSONResponse(status_code=503, content={"status": "unavailable"})
+        return JSONResponse(content={"status": "ok"})
+
     for router in (
         auth.router,
         users.router,
@@ -145,7 +164,7 @@ def create_app() -> FastAPI:
 
     uploads_dir = Path(__file__).resolve().parent.parent / "uploads"
     uploads_dir.mkdir(parents=True, exist_ok=True)
-    app.mount("/uploads", StaticFiles(directory=str(uploads_dir)), name="uploads")
+    app.add_api_route("/uploads/{filename}", receipts.download_receipt, methods=["GET"], include_in_schema=False)
 
     return app
 

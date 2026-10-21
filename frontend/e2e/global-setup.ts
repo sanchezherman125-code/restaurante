@@ -12,7 +12,7 @@ function testDatabaseEnvironment(): NodeJS.ProcessEnv {
   if (!databaseName.includes("test") && !databaseName.includes("e2e")) {
     throw new Error("E2E abortado: TEST_DATABASE_URL debe usar una base identificada como test/e2e.");
   }
-  return { ...process.env, DATABASE_ENV: "test", TEST_DATABASE_URL: testDatabaseUrl };
+  return { ...process.env, ENVIRONMENT: "test", DATABASE_ENV: "test", TEST_DATABASE_URL: testDatabaseUrl };
 }
 
 /**
@@ -29,6 +29,7 @@ export default function globalSetup(): void {
     env,
   } as const;
   execFileSync(python, ["-m", "alembic", "upgrade", "head"], options);
+  execFileSync(python, ["-m", "alembic", "check"], options);
   execFileSync(python, ["-m", "scripts.seed"], options);
   execFileSync(python, ["-m", "scripts.reset_db"], options);
 }

@@ -1,3 +1,4 @@
+import hashlib
 from typing import Any
 from uuid import UUID
 
@@ -46,6 +47,8 @@ def begin_idempotent(
             return None
     if row is None:
         return None
+    if row.user_id != user_id or row.operation_type != operation_type:
+        raise ConflictError("IDEMPOTENCY_KEY_REUSED", "El identificador pertenece a otra operación o usuario.")
     if row.response_status in (0, None):
         raise ConflictError(
             "IDEMPOTENCY_IN_PROGRESS",
@@ -75,6 +78,8 @@ def execute_idempotent(
     user_id: UUID | None,
     operation_type: str,
     fn,
+    *,
+    scope: str = "",
 ) -> tuple[int, dict[str, Any]]:
     """Ejecuta una operación protegida por clave de idempotencia.
 
@@ -82,6 +87,8 @@ def execute_idempotent(
     la operación. ``fn`` debe devolver ``(status_code, body_dict)`` y dejar los
     cambios pendientes en la sesión (sin confirmar).
     """
+    if scope:
+        operation_type = f"{operation_type}:{hashlib.sha256(scope.encode()).hexdigest()[:16]}"
     stored = begin_idempotent(db, key, user_id, operation_type)
     if stored is not None:
         return int(stored["status"]), stored["body"]
@@ -93,7 +100,12 @@ def execute_idempotent(
     except IntegrityError:
         db.rollback()
         row = _load(db, key)
-        if row is not None and row.response_status not in (0, None):
+        if (
+            row is not None
+            and row.user_id == user_id
+            and row.operation_type == operation_type
+            and row.response_status not in (0, None)
+        ):
             return int(row.response_status), row.response_body
         raise
     return status, body

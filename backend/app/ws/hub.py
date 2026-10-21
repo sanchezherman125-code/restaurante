@@ -49,6 +49,9 @@ class ConnectionHub:
         message = {"event": event, "data": payload}
         targets = [c for c in self._connections.values() if channels is None or c.channels & channels]
         for conn in targets:
+            owner = payload.get("created_by_waiter_id")
+            if conn.role == "WAITER" and owner and str(owner) != conn.user_id:
+                continue
             loop = conn.loop if conn.loop is not None else self._loop
             if loop is None or loop.is_closed():
                 continue
@@ -56,6 +59,9 @@ class ConnectionHub:
                 loop.call_soon_threadsafe(self._dispatch, conn, message)
             except RuntimeError:
                 logger.debug("Loop cerrado; se descarta mensaje WebSocket")
+
+    def after_commit(self, db, event: str, payload: dict[str, Any], channels: set[str] | None = None) -> None:
+        db.info.setdefault("events", []).append((event, payload, channels))
 
     def _dispatch(self, conn: Connection, message: dict[str, Any]) -> None:
         try:

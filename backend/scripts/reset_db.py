@@ -10,6 +10,8 @@ from app.db import engine
 
 TRUNCATE_SQL = """
 TRUNCATE TABLE
+    auth_sessions,
+    receipts,
     audit_logs,
     login_attempts,
     idempotency_keys,

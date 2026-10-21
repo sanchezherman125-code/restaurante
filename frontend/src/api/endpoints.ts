@@ -74,8 +74,9 @@ export const ordersApi = {
     api.post<Command & { order: Order }>(`${V1}/orders/${orderId}/items`, payload),
   updateItem: (orderId: string, itemId: string, body: Record<string, unknown>) =>
     api.patch<Order>(`${V1}/orders/${orderId}/items/${itemId}`, body),
-  cancelItem: (orderId: string, itemId: string, reason?: string) =>
-    api.post<Order>(`${V1}/orders/${orderId}/items/${itemId}/cancel`, { reason }),
+  cancelItem: (orderId: string, itemId: string, reason?: string, operationId?: string) =>
+    api.post<Order>(`${V1}/orders/${orderId}/items/${itemId}/cancel`,
+      { reason, client_operation_id: operationId }, { idempotencyKey: operationId }),
   setItemStatus: (orderId: string, itemId: string, status: string, clientOperationId?: string) =>
     api.post<Order>(
       `${V1}/orders/${orderId}/items/${itemId}/status`,
@@ -105,8 +106,8 @@ export const expensesApi = {
   currentShift: () => api.get<Expense[]>(`${V1}/expenses/current-shift`),
   history: (shiftId?: string) =>
     api.get<Expense[]>(`${V1}/expenses${shiftId ? `?shift_id=${shiftId}` : ""}`),
-  create: (body: { amount: string; description: string; receipt_url?: string | null }) =>
-    api.post<Expense>(`${V1}/expenses`, body),
+  create: (body: { amount: string; description: string; receipt_url?: string | null }, operationId?: string) =>
+    api.post<Expense>(`${V1}/expenses`, { ...body, client_operation_id: operationId }, { idempotencyKey: operationId }),
 };
 
 export const purchaseApi = {
@@ -164,4 +165,24 @@ export async function uploadReceipt(file: File): Promise<{ url: string }> {
   const formData = new FormData();
   formData.append("file", file);
   return apiRequest<{ url: string }>(`${V1}/receipts`, { method: "POST", formData });
+}
+
+export async function openReceipt(url: string): Promise<void> {
+  // Historical external URLs are opened directly; new receipts are always authenticated.
+  if (!url.startsWith("/api/v1/receipts/") && !url.startsWith("/uploads/")) {
+    if (url.startsWith("https://")) window.open(url, "_blank", "noopener,noreferrer");
+    return;
+  }
+  const tab = window.open("about:blank", "_blank");
+  if (tab) tab.opener = null;
+  try {
+    const blob = await apiRequest<Blob>(url, { responseType: "blob" });
+    const objectUrl = URL.createObjectURL(blob);
+    if (tab) tab.location.href = objectUrl;
+    else window.location.href = objectUrl;
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+  } catch (error) {
+    tab?.close();
+    throw error;
+  }
 }

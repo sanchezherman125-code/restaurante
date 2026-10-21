@@ -288,4 +288,5 @@ export interface QueuedOperation {
   status: SyncStatus;
   last_error: string | null;
   server_resource_id?: string | null;
+  owner_user_id?: string | null;
 }

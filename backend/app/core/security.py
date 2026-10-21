@@ -34,10 +34,11 @@ def needs_rehash(pin_hash: str) -> bool:
         return False
 
 
-def create_access_token(user_id: str, role: str, username: str) -> str:
+def create_access_token(user_id: str, role: str, username: str, session_id: str) -> str:
     now = datetime.now(UTC)
     payload = {
         "sub": user_id,
+        "sid": session_id,
         "role": role,
         "username": username,
         "type": "access",
@@ -48,23 +49,29 @@ def create_access_token(user_id: str, role: str, username: str) -> str:
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
 
-def create_refresh_token(user_id: str, role: str, username: str) -> str:
+def create_refresh_token(user_id: str, role: str, username: str, session_id: str, jti: str) -> str:
     now = datetime.now(UTC)
     payload = {
         "sub": user_id,
+        "sid": session_id,
         "role": role,
         "username": username,
         "type": "refresh",
         "iat": now,
         "exp": now + timedelta(days=settings.jwt_refresh_token_days),
-        "jti": secrets.token_hex(8),
+        "jti": jti,
     }
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
 
 def decode_token(token: str, expected_type: str = "access") -> dict[str, Any]:
     try:
-        payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+        payload = jwt.decode(
+            token,
+            settings.jwt_secret,
+            algorithms=[settings.jwt_algorithm],
+            options={"require": ["sub", "sid", "type", "iat", "exp", "jti"]},
+        )
     except jwt.ExpiredSignatureError as exc:
         raise ApiError(401, "TOKEN_EXPIRED", "La sesión expiró. Inicie sesión nuevamente.") from exc
     except jwt.InvalidTokenError as exc:

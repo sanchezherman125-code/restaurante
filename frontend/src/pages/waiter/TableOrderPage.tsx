@@ -88,7 +88,7 @@ export function TableOrderPage() {
   const pendingRecord = usePendingOrders((state) => state.records.find((r) => r.table_id === tableId && !r.server_order_id && !r.error));
 
   const menu = useQuery({ queryKey: ["menu"], queryFn: menuApi.get });
-  const orders = useQuery({ queryKey: ["orders", "active"], queryFn: () => ordersApi.active(), retry: false });
+  const orders = useQuery({ queryKey: ["orders", "active"], queryFn: () => ordersApi.active(), refetchInterval: 15000, retry: false });
 
   const [categoryId, setCategoryId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -214,7 +214,7 @@ export function TableOrderPage() {
           method: "POST",
           body: { reason: "Cancelado por mesero" },
         },
-        () => ordersApi.cancelItem(order.id, item.id, "Cancelado por mesero"),
+        (operationId) => ordersApi.cancelItem(order.id, item.id, "Cancelado por mesero", operationId),
       );
       if (!outcome.queued) {
         void queryClient.invalidateQueries({ queryKey: ["orders"] });

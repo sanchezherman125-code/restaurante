@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { enqueue, flushQueue, getBackoffMs, resetBackoff } from "./queue";
 import { deleteOperation, listOperations, onQueueChange, putOperation, recoverInterruptedOperations } from "./queue-db";
+import { useSession } from "../stores/session";
 
 function jsonResponse(body: unknown, status = 201): Response {
   return new Response(JSON.stringify(body), {
@@ -10,6 +11,7 @@ function jsonResponse(body: unknown, status = 201): Response {
 }
 
 beforeEach(async () => {
+  useSession.setState({ user: null });
   resetBackoff();
   vi.restoreAllMocks();
   localStorage.clear();
@@ -19,6 +21,15 @@ beforeEach(async () => {
 });
 
 describe("cola offline", () => {
+  it("no sincroniza operaciones de otro usuario en un dispositivo compartido", async () => {
+    const op = await enqueue({ operation_type: "REGISTER_EXPENSE", path: "/api/v1/expenses", method: "POST", body: {} });
+    await putOperation({ ...op, owner_user_id: "other-user" });
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await flushQueue();
+    expect(result.deferred).toHaveLength(1);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
   it("guarda operaciones como LOCAL_PENDING", async () => {
     const op = await enqueue({
       operation_type: "REGISTER_EXPENSE",

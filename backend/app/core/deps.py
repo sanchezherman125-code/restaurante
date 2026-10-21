@@ -8,6 +8,7 @@ from app.core.errors import ApiError, ForbiddenError, NotFoundError
 from app.core.security import decode_token
 from app.db import get_db
 from app.models import Shift, User
+from app.services.auth import validate_session
 
 DbSession = Annotated[Session, Depends(get_db)]
 
@@ -22,9 +23,6 @@ ALL_ROLES = {ROLE_WAITER, ROLE_KITCHEN, ROLE_GRILL, ROLE_ADMIN}
 def _extract_token(request: Request, authorization: str | None) -> str:
     if authorization and authorization.lower().startswith("bearer "):
         return authorization[7:].strip()
-    token = request.query_params.get("token")
-    if token:
-        return token
     raise ApiError(401, "UNAUTHORIZED", "Falta el token de autenticación.")
 
 
@@ -35,6 +33,7 @@ def get_current_user(
 ) -> User:
     token = _extract_token(request, authorization)
     payload = decode_token(token, expected_type="access")
+    validate_session(db, payload)
     try:
         user_id = UUID(payload["sub"])
     except (KeyError, ValueError) as exc:
@@ -93,3 +92,6 @@ def ensure_order_in_open_shift(db: Session, shift_id: UUID) -> None:
         raise NotFoundError("SHIFT_NOT_FOUND", "El turno del pedido no existe.")
     if shift.status != "OPEN":
         raise ApiError(409, "SHIFT_CLOSED", "El turno está cerrado. No se pueden modificar pedidos.")
+    # Callers may have read orders/items before waiting on the shift lock.
+    # Reload them after acquiring it so concurrent updates cannot use stale state.
+    db.expire_all()

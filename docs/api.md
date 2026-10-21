@@ -6,7 +6,7 @@ las URLs relativas parten de `/api/v1/...`). Documentación interactiva: `/api/d
 ## 1. Convenciones
 
 - **Auth:** `Authorization: Bearer <access_token>` en todas las rutas salvo `/health`,
-  `/api/v1/auth/login` y `/api/v1/auth/refresh`.
+  `/ready`, `/api/v1/auth/login` y `/api/v1/auth/refresh`.
 - **Dispositivo:** `X-Device-Id: <uuid>` (opcional, usado para auditoría).
 - **Idempotencia:** header `Idempotency-Key: <uuid>` y/o campo `client_operation_id` en el body
   (ver §4).
@@ -28,8 +28,8 @@ Roles: `Staff` = cualquier usuario autenticado; `Admin`; `Waiter`; `Kitchen`; `G
 | Método | Ruta | Rol | Descripción |
 |---|---|---|---|
 | POST | `/api/v1/auth/login` | público | usuario + PIN → access/refresh; rate limit 5 intentos / 5 min |
-| POST | `/api/v1/auth/refresh` | público | renueva el par de tokens |
-| POST | `/api/v1/auth/logout` | Staff | borra cookies/refresh |
+| POST | `/api/v1/auth/refresh` | público con refresh válido | renueva el par y rota el refresh de un solo uso |
+| POST | `/api/v1/auth/logout` | Staff | revoca la sesión en servidor, incluidos access y refresh |
 | GET | `/api/v1/auth/me` | Staff | usuario de la sesión |
 
 ### Usuarios (§48)
@@ -125,6 +125,7 @@ Agrupan ítems por mesa/pedido, con `summary` y tiempos de preparación.
 | Método | Ruta | Rol |
 |---|---|---|
 | POST | `/api/v1/receipts` | Staff (multipart, JPEG/PNG/WebP/PDF ≤ 5 MB) |
+| GET | `/api/v1/receipts/{filename}` | Propietario o ADMIN; descarga privada autenticada |
 | POST | `/api/v1/push/subscriptions` | Staff |
 
 ### Salud
@@ -136,10 +137,16 @@ Agrupan ítems por mesa/pedido, con `summary` y tiempos de preparación.
 ## 3. WebSocket
 
 ```text
-GET /api/v1/ws?token=<access_token>&device_id=<uuid>
+GET /api/v1/ws
+
+// Primer mensaje después de abrir el WebSocket (máximo 5 segundos):
+{"type":"auth","token":"<access_token>","device_id":"<uuid>"}
 ```
 
-También acepta `Authorization: Bearer` en headers. El token es el mismo access token del login.
+El token es el mismo access token del login y nunca se envía en la URL. Se comprueba Origin,
+usuario activo y sesión revocable; al expirar se renueva por HTTP y se reconecta.
+Los cambios de PIN/rol o la desactivación revocan las sesiones del usuario.
+Los eventos de negocio se publican sólo después del commit.
 
 Mensaje de bienvenida:
 

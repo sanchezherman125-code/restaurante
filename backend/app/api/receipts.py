@@ -1,15 +1,17 @@
 import logging
 import mimetypes
+import re
 import uuid
 from pathlib import Path
 
 import httpx
 from fastapi import APIRouter, File, UploadFile
+from fastapi.responses import FileResponse, Response
 
 from app.config import settings
 from app.core.deps import DbSession, StaffUser
-from app.core.errors import ValidationAppError
-from app.models import PushSubscription
+from app.core.errors import ApiError, ForbiddenError, NotFoundError, ValidationAppError
+from app.models import Expense, PushSubscription, Receipt
 from app.schemas.ops import PushSubscriptionCreate, ReceiptUploadOut
 
 logger = logging.getLogger("app.receipts")
@@ -61,18 +63,18 @@ async def _upload_supabase(data: bytes, filename: str, content_type: str) -> str
         "Authorization": f"Bearer {settings.supabase_service_key}",
         "apikey": settings.supabase_service_key,
         "Content-Type": content_type,
-        "x-upsert": "true",
+        "x-upsert": "false",
     }
     async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.put(url, content=data, headers=headers)
+        response = await client.post(url, content=data, headers=headers)
         response.raise_for_status()
-    return f"{settings.supabase_url.rstrip('/')}/storage/v1/object/public/{settings.supabase_storage_bucket}/{filename}"
+    return f"/api/v1/receipts/{filename}"
 
 
 @router.post("/receipts", response_model=ReceiptUploadOut, status_code=201)
-async def upload_receipt(user: StaffUser, file: UploadFile = File(...)) -> ReceiptUploadOut:
+async def upload_receipt(db: DbSession, user: StaffUser, file: UploadFile = File(...)) -> ReceiptUploadOut:
     _validate(file)
-    data = await file.read()
+    data = await file.read(settings.max_receipt_bytes + 1)
     if not data:
         raise ValidationAppError("EMPTY_FILE", "El archivo está vacío.")
     if len(data) > settings.max_receipt_bytes:
@@ -89,13 +91,61 @@ async def upload_receipt(user: StaffUser, file: UploadFile = File(...)) -> Recei
     filename = f"{uuid.uuid4().hex}{ext}"
     content_type = file.content_type or mimetypes.guess_type(filename)[0] or "application/octet-stream"
 
-    url = await _upload_supabase(data, filename, content_type)
+    try:
+        url = await _upload_supabase(data, filename, content_type)
+    except httpx.HTTPError as exc:
+        raise ApiError(502, "STORAGE_UNAVAILABLE", "No se pudo guardar el comprobante. Intente nuevamente.") from exc
     if url is None:
         UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
         (UPLOAD_DIR / filename).write_bytes(data)
-        url = f"/uploads/{filename}"
+        url = f"/api/v1/receipts/{filename}"
+
+    db.add(Receipt(filename=filename, user_id=user.id, content_type=content_type, size=len(data)))
+    db.commit()
 
     return ReceiptUploadOut(url=url, content_type=content_type, size=len(data))
+
+
+@router.get("/receipts/{filename}")
+async def download_receipt(filename: str, db: DbSession, user: StaffUser) -> Response:
+    if not re.fullmatch(r"[0-9a-f]{32}\.(?:jpg|jpeg|png|webp|pdf)", filename):
+        raise NotFoundError("RECEIPT_NOT_FOUND", "Comprobante no encontrado.")
+    receipt = db.get(Receipt, filename)
+    if user.role != "ADMIN":
+        owned_expense = (
+            db.query(Expense.id)
+            .filter(
+                Expense.created_by_user_id == user.id,
+                Expense.receipt_url.in_([f"/api/v1/receipts/{filename}", f"/uploads/{filename}"]),
+            )
+            .first()
+        )
+        if (receipt is None or receipt.user_id != user.id) and not owned_expense:
+            raise ForbiddenError("RECEIPT_FORBIDDEN", "No tiene permiso para ver este comprobante.")
+    headers = {"Cache-Control": "private, no-store", "Content-Disposition": f'inline; filename="{filename}"'}
+    content_type = receipt.content_type if receipt else mimetypes.guess_type(filename)[0]
+    if settings.supabase_url and settings.supabase_service_key:
+        url = (
+            f"{settings.supabase_url.rstrip('/')}/storage/v1/object/authenticated/"
+            f"{settings.supabase_storage_bucket}/{filename}"
+        )
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                result = await client.get(
+                    url,
+                    headers={
+                        "Authorization": f"Bearer {settings.supabase_service_key}",
+                        "apikey": settings.supabase_service_key,
+                    },
+                )
+                result.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise ApiError(502, "STORAGE_UNAVAILABLE", "No se pudo obtener el comprobante.") from exc
+        return Response(result.content, media_type=content_type, headers=headers)
+    path = UPLOAD_DIR / filename
+    if not path.is_file():
+        raise NotFoundError("RECEIPT_NOT_FOUND", "Comprobante no encontrado.")
+    return FileResponse(path, media_type=content_type, headers=headers)
 
 
 @router.post("/push/subscriptions", status_code=201)

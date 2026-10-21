@@ -61,19 +61,21 @@ interface RequestOptions {
   auth?: boolean;
   signal?: AbortSignal;
   formData?: FormData;
+  responseType?: "blob";
 }
 
 let refreshPromise: Promise<boolean> | null = null;
 
-async function tryRefresh(): Promise<boolean> {
+export async function tryRefresh(): Promise<boolean> {
   if (!refreshPromise) {
     refreshPromise = (async () => {
       const refresh = getRefreshToken();
-      if (!refresh) return false;
       try {
+        if (!refresh) return false;
         const response = await fetch(`${API_BASE}/api/v1/auth/refresh`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
+          signal: AbortSignal.timeout(15000),
           body: JSON.stringify({ refresh_token: refresh }),
         });
         if (!response.ok) return false;
@@ -92,7 +94,7 @@ async function tryRefresh(): Promise<boolean> {
   return refreshPromise;
 }
 
-export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
+export async function apiRequest<T>(path: string, options: RequestOptions = {}, refreshedOnce = false): Promise<T> {
   const { method = "GET", body, idempotencyKey, auth = true, signal, formData } = options;
 
   const headers: Record<string, string> = { "X-Device-Id": getDeviceId() };
@@ -108,7 +110,7 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
     response = await fetch(`${API_BASE}${path}`, {
       method,
       headers,
-      signal,
+      signal: signal ?? AbortSignal.timeout(15000),
       body: formData ?? (body !== undefined ? JSON.stringify(body) : undefined),
     });
   } catch (error) {
@@ -117,15 +119,16 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   }
 
   if (response.status === 401 && auth) {
-    const refreshed = await tryRefresh();
+    const refreshed = !refreshedOnce && await tryRefresh();
     if (refreshed) {
-      return apiRequest<T>(path, { ...options, auth: true });
+      return apiRequest<T>(path, { ...options, auth: true }, true);
     }
     clearTokens();
     throw new ApiError(401, "SESSION_EXPIRED", "La sesión expiró. Inicie sesión nuevamente.");
   }
 
   if (response.status === 204) return undefined as T;
+  if (response.ok && options.responseType === "blob") return await response.blob() as T;
 
   const text = await response.text();
   let payload: unknown = null;

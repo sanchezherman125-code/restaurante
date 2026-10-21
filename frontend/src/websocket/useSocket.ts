@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import type { QueryClient } from "@tanstack/react-query";
-import { getAccessToken, getDeviceId } from "../api/client";
+import { getAccessToken, getDeviceId, tryRefresh } from "../api/client";
 import { useSession } from "../stores/session";
 import { playBeep, useUi } from "../stores/ui";
 
@@ -141,8 +141,6 @@ class RealtimeClient {
     this.ws.onopen = () => {
       this.ws?.send(JSON.stringify({ type: "auth", token, device_id: getDeviceId() }));
       this.attempt = 0;
-      useUi.getState().setConnection("online");
-      this.resync();
       if (this.pingTimer) window.clearInterval(this.pingTimer);
       this.pingTimer = window.setInterval(() => {
         if (this.ws?.readyState === WebSocket.OPEN) this.ws.send("ping");
@@ -152,6 +150,11 @@ class RealtimeClient {
     this.ws.onmessage = (message) => {
       try {
         const parsed = JSON.parse(message.data as string) as { event?: string; data?: Record<string, unknown> };
+        if (parsed.event === "connection.ready") {
+          useUi.getState().setConnection("online");
+          this.resync();
+          return;
+        }
         if (parsed.event && parsed.event !== "pong") {
           this.handle(parsed.event, parsed.data ?? {});
         }
@@ -160,10 +163,12 @@ class RealtimeClient {
       }
     };
 
-    this.ws.onclose = () => {
+    this.ws.onclose = async (event) => {
       if (this.pingTimer) window.clearInterval(this.pingTimer);
       if (this.stopped) return;
       useUi.getState().setConnection("offline");
+      if (event.code === 4401) await tryRefresh();
+      if (this.stopped) return;
       this.scheduleReconnect();
     };
 
@@ -189,12 +194,21 @@ export function useRealtime(queryClient: QueryClient): void {
       realtime.start(queryClient);
     };
     if (useSession.getState().user) realtime.start(queryClient);
+    const onOffline = () => {
+      realtime.stop();
+      useUi.getState().setConnection("offline");
+    };
+    const onOnline = () => { if (useSession.getState().user) restart(); };
+    window.addEventListener("offline", onOffline);
+    window.addEventListener("online", onOnline);
     const unsubscribe = useSession.subscribe((state, previous) => {
       if (state.user && !previous.user) restart();
       else if (!state.user && previous.user) realtime.stop();
     });
     return () => {
       unsubscribe();
+      window.removeEventListener("offline", onOffline);
+      window.removeEventListener("online", onOnline);
       realtime.stop();
     };
   }, [queryClient]);

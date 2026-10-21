@@ -83,7 +83,7 @@ export function TablesPage() {
   const addPending = usePendingOrders((state) => state.add);
 
   const tables = useQuery({ queryKey: ["tables"], queryFn: tablesApi.list });
-  const activeOrders = useQuery({ queryKey: ["orders", "active"], queryFn: () => ordersApi.active(), retry: false });
+  const activeOrders = useQuery({ queryKey: ["orders", "active"], queryFn: () => ordersApi.active(), refetchInterval: 15000, retry: false });
   const currentShift = useQuery({ queryKey: ["shifts", "current"], queryFn: shiftsApi.current, retry: false });
 
   const tableRows = useMemo(() => {

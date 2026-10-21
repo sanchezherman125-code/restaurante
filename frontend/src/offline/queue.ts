@@ -1,6 +1,7 @@
 import { ApiError, NetworkError, apiRequest } from "../api/client";
 import type { QueuedOperation } from "../types/api";
 import { deleteOperation, getOperation, listOperations, putOperation } from "./queue-db";
+import { useSession } from "../stores/session";
 
 export type OperationType = QueuedOperation["operation_type"];
 
@@ -12,8 +13,18 @@ export interface NewOperation {
   parent_operation_id?: string | null;
 }
 
-let backoffMs = 0;
-let nextAllowedAttempt = 0;
+const BACKOFF_KEY = "restaurante.queueBackoff";
+function savedBackoff(): { backoffMs: number; nextAllowedAttempt: number } {
+  try {
+    const saved = JSON.parse(localStorage.getItem(BACKOFF_KEY) ?? "null");
+    if (saved && Number.isFinite(saved.backoffMs) && Number.isFinite(saved.nextAllowedAttempt)) {
+      return { backoffMs: Math.min(60000, Math.max(0, saved.backoffMs)),
+        nextAllowedAttempt: Math.min(Date.now() + 60000, saved.nextAllowedAttempt) };
+    }
+  } catch { /* ignore invalid local state */ }
+  return { backoffMs: 0, nextAllowedAttempt: 0 };
+}
+let { backoffMs, nextAllowedAttempt } = savedBackoff();
 let activeFlush: Promise<FlushResult> | null = null;
 
 export function getBackoffMs(): number {
@@ -23,11 +34,13 @@ export function getBackoffMs(): number {
 export function resetBackoff(): void {
   backoffMs = 0;
   nextAllowedAttempt = 0;
+  localStorage.removeItem(BACKOFF_KEY);
 }
 
 export function createOperation(newOp: NewOperation, status: QueuedOperation["status"] = "LOCAL_PENDING"): QueuedOperation {
   return {
     client_operation_id: crypto.randomUUID(),
+    owner_user_id: useSession.getState().user?.id ?? null,
     operation_type: newOp.operation_type,
     path: newOp.path,
     method: newOp.method,
@@ -98,6 +111,17 @@ async function flushQueueImpl(): Promise<FlushResult> {
 
     for (const op of ops) {
       if (op.status !== "LOCAL_PENDING") continue;
+      if (!op.owner_user_id && useSession.getState().user) {
+        const legacy = { ...op, status: "SYNC_ERROR" as const,
+          last_error: "Operación antigua sin usuario identificado. Verifique el pedido antes de descartarla." };
+        await putOperation(legacy);
+        result.failed.push(legacy);
+        continue;
+      }
+      if (op.owner_user_id && op.owner_user_id !== useSession.getState().user?.id) {
+        result.deferred.push(op);
+        continue;
+      }
 
       if (op.parent_operation_id) {
         const parent = byId.get(op.parent_operation_id);
@@ -159,13 +183,14 @@ async function flushQueueImpl(): Promise<FlushResult> {
         result.synced.push(synced);
         resetBackoff();
       } catch (error) {
-        if (error instanceof NetworkError) {
+        if (error instanceof NetworkError || (error instanceof ApiError && error.status >= 500)) {
           const deferred: QueuedOperation = { ...sending, status: "LOCAL_PENDING" };
           await putOperation(deferred);
           byId.set(op.client_operation_id, deferred);
           result.networkFailure = true;
           backoffMs = backoffMs === 0 ? 1000 : Math.min(backoffMs * 2, 60000);
           nextAllowedAttempt = Date.now() + backoffMs;
+          localStorage.setItem(BACKOFF_KEY, JSON.stringify({ backoffMs, nextAllowedAttempt }));
           break;
         }
         if (error instanceof ApiError) {

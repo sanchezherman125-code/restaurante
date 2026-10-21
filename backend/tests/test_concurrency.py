@@ -49,6 +49,11 @@ def test_same_command_uuid_is_idempotent_under_real_concurrency(mesero, open_shi
         db.close()
 
 
+def test_concurrent_shift_opening_creates_exactly_one_shift(admin):
+    token = _token("admin")
+    assert sorted(_post_concurrently("/api/v1/shifts/open", {}, [token, token])) == [201, 409]
+
+
 def test_concurrent_payments_never_exceed_order_total(admin, mesero, open_shift, menu_lookup):
     order = create_order(mesero)
     create_command(mesero, order["id"], [{"menu_item_id": menu_lookup["Pollo a la brasa"]["id"]}])

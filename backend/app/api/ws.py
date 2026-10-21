@@ -7,6 +7,7 @@ from app.config import settings
 from app.core.security import decode_token
 from app.db import SessionLocal
 from app.models import User
+from app.services.auth import validate_session
 from app.ws.hub import Connection, hub
 
 logger = logging.getLogger("app.ws")
@@ -37,11 +38,15 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
     db = SessionLocal()
     try:
+        validate_session(db, payload)
         user = db.get(User, __import__("uuid").UUID(user_id))
         if user is None or not user.is_active:
             await websocket.close(code=4401)
             return
         role = user.role
+    except Exception:
+        await websocket.close(code=4401)
+        return
     finally:
         db.close()
 
@@ -70,7 +75,20 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
     try:
         while True:
-            message = await websocket.receive_text()
+            try:
+                message = await asyncio.wait_for(websocket.receive_text(), timeout=30)
+            except TimeoutError:
+                message = ""
+            try:
+                current_payload = decode_token(token, expected_type="access")
+                with SessionLocal() as session_db:
+                    validate_session(session_db, current_payload)
+                    current_user = session_db.get(User, __import__("uuid").UUID(user_id))
+                    if current_user is None or not current_user.is_active or current_user.role != role:
+                        raise ValueError("Usuario inactivo o permisos cambiados")
+            except Exception:
+                await websocket.close(code=4401)
+                break
             if message.strip().lower() in {"ping", '{"type":"ping"}'}:
                 await websocket.send_json({"event": "pong", "data": {}})
     except WebSocketDisconnect:

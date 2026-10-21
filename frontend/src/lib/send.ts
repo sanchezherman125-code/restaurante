@@ -1,4 +1,4 @@
-import { NetworkError } from "../api/client";
+import { ApiError, NetworkError } from "../api/client";
 import { enqueue, type NewOperation } from "../offline/queue";
 import { deleteOperation, putOperation } from "../offline/queue-db";
 import { useUi } from "../stores/ui";
@@ -21,7 +21,7 @@ export async function sendOrQueue(op: NewOperation, exec: (clientOperationId: st
     await deleteOperation(queued.client_operation_id);
     return { queued: false, operationId: null };
   } catch (error) {
-    if (error instanceof NetworkError) {
+    if (error instanceof NetworkError || (error instanceof ApiError && error.status >= 500)) {
       await putOperation({
         ...queued,
         status: "LOCAL_PENDING",

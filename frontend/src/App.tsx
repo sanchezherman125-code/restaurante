@@ -25,6 +25,10 @@ export default function App() {
     startQueueSync();
   }, [restore]);
 
+  useEffect(() => useSession.subscribe((state, previous) => {
+    if (state.user?.id !== previous.user?.id) queryClient.clear();
+  }), []);
+
   useRealtime(queryClient);
 
   return (

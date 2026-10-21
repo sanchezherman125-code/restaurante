@@ -120,7 +120,7 @@ function Board({ area }: { area: string }) {
           method: "POST",
           body: { reason: `Cancelado en ${AREA_LABEL[area]}` },
         },
-        () => ordersApi.cancelItem(item.order_id, item.id, `Cancelado en ${AREA_LABEL[area]}`),
+        (operationId) => ordersApi.cancelItem(item.order_id, item.id, `Cancelado en ${AREA_LABEL[area]}`, operationId),
       );
       if (!outcome.queued) void queryClient.invalidateQueries({ queryKey: ["preparation"] });
       toast("info", "Producto cancelado");

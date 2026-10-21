@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { useQueue } from "./queue";
+import { useSession } from "./session";
 
 export interface PendingOrder {
   operation_id: string;
@@ -12,17 +13,18 @@ export interface PendingOrder {
 }
 
 const STORAGE_KEY = "restaurante.pendingOrders";
+const storageKey = () => `${STORAGE_KEY}.${useSession.getState().user?.id ?? "anonymous"}`;
 
 function load(): PendingOrder[] {
   try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "[]") as PendingOrder[];
+    return JSON.parse(localStorage.getItem(storageKey()) ?? "[]") as PendingOrder[];
   } catch {
     return [];
   }
 }
 
 function save(records: PendingOrder[]): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+  localStorage.setItem(storageKey(), JSON.stringify(records));
 }
 
 interface PendingOrdersState {
@@ -78,4 +80,8 @@ useQueue.subscribe((state) => {
   if (state.operations.length > 0 || usePendingOrders.getState().records.length > 0) {
     usePendingOrders.getState().sync();
   }
+});
+
+useSession.subscribe((state, previous) => {
+  if (state.user?.id !== previous.user?.id) usePendingOrders.setState({ records: load() });
 });

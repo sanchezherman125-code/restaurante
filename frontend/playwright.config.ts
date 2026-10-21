@@ -22,7 +22,7 @@ export default defineConfig({
   },
   webServer: [
     {
-      command: `VITE_API_PROXY_TARGET=http://localhost:${apiPort} npm run dev -- --port ${appPort}`,
+      command: `VITE_API_PROXY_TARGET=http://localhost:${apiPort} npm run build && VITE_API_PROXY_TARGET=http://localhost:${apiPort} npm run preview -- --port ${appPort}`,
       url: `http://localhost:${appPort}`,
       reuseExistingServer: false,
       timeout: 120_000,
@@ -33,6 +33,8 @@ export default defineConfig({
       url: `http://localhost:${apiPort}/health`,
       env: {
         ...process.env,
+        ENVIRONMENT: "test",
+        ALLOWED_HOSTS: "localhost,127.0.0.1,testserver",
         DATABASE_ENV: "test",
         TEST_DATABASE_URL: testDatabaseUrl,
         CORS_ORIGINS: `http://localhost:${appPort}`,

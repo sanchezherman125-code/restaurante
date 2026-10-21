@@ -30,13 +30,14 @@ del layout, y el detalle de cada operación en la cola.
 
 ## 3. Almacenamiento
 
-- Base IndexedDB: `restaurante-offline`, store `operations` (`src/offline/queue-db.ts`).
+- Base IndexedDB: `restaurante-offline`, store `queue` (`src/offline/queue-db.ts`).
 - Índice por `created_at` para respetar el orden de envío y `by_status` para listar pendientes.
 - Registro de operación (`QueuedOperation`):
 
 ```json
 {
   "client_operation_id": "uuid",
+  "owner_user_id": "uuid-del-usuario",
   "operation_type": "CREATE_COMMAND",
   "path": "/api/v1/orders/{orderRef}/commands",
   "method": "POST",
@@ -51,8 +52,9 @@ del layout, y el detalle de cada operación en la cola.
 }
 ```
 
-- La función `sendOrQueue` (`src/lib/send.ts`) intenta la petición normal y, **solo si falla la
-  red** (`NetworkError`), encola la operación. Un 4xx nunca se encola: se muestra el error.
+- `sendOrQueue` persiste la operación y el UUID antes de la petición inicial. Ante fallo de red
+  o error 5xx de resultado incierto, conserva el mismo UUID para reintentar. Un 4xx directo
+  se muestra como error. El sincronizador sólo envía operaciones del usuario que las creó.
 - Los pedidos creados offline se guardan también en `stores/pendingOrders.ts` para poder
   mostrar la mesa y sus ítems hasta que el servidor devuelva el id real.
 
@@ -74,11 +76,18 @@ Así, al reconectar, la cola envía primero el pedido, guarda su id y luego la c
 - `flushQueue()` procesa la cola en orden; cada operación se marca `SENDING` antes de salir.
 - Fallo de red → vuelve a `LOCAL_PENDING`, `networkFailure = true` y **backoff exponencial**
   1 s → 2 s → … → 60 s (máximo). Con backoff activo no se reintenta.
+- Los errores 5xx también se reintentan con la misma identidad. El backoff se conserva
+  tras recarga y el temporizador se vuelve a programar según el estado actual.
 - Respuesta 4xx → `SYNC_ERROR` con `code: mensaje` y se continúa con la siguiente operación.
 - Éxito → `SYNCED` + `resetBackoff()`.
 - El flush se relanza automáticamente: al recuperar la conexión (`online`), al detectar
   un cambio en la cola y con un temporizador de respaldo (`startQueueSync`).
 - Reintento manual desde la UI: `retryOperation()` (limpia el backoff) o `discardOperation()`.
+- El indicador de errores abre el detalle con acciones de reintentar o descartar con confirmación.
+  El cierre de sesión se bloquea mientras el usuario tenga operaciones sin resolver.
+  Las operaciones antiguas sin propietario se marcan para revisión y no se envían automáticamente.
+- Un pago con respuesta perdida se conserva aparte con UUID y monto originales, requiere conexión
+  y se verifica con el botón «Verificar pago pendiente». Nunca se convierte en pago offline nuevo.
 
 ## 6. Idempotencia (§22)
 

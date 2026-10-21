@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi import APIRouter
@@ -5,7 +6,7 @@ from fastapi import APIRouter
 from app.core.deps import AdminUser, DbSession
 from app.core.errors import ConflictError, NotFoundError
 from app.core.security import hash_pin
-from app.models import User
+from app.models import AuthSession, User
 from app.schemas.auth import UserCreate, UserOut, UserUpdate
 
 router = APIRouter(prefix="/users", tags=["users"])
@@ -36,11 +37,17 @@ def create_user(payload: UserCreate, db: DbSession, _: AdminUser) -> UserOut:
 
 
 @router.patch("/{user_id}", response_model=UserOut)
-def update_user(user_id: UUID, payload: UserUpdate, db: DbSession, _: AdminUser) -> UserOut:
+def update_user(user_id: UUID, payload: UserUpdate, db: DbSession, admin: AdminUser) -> UserOut:
     target = db.get(User, user_id)
     if target is None:
         raise NotFoundError("USER_NOT_FOUND", "Usuario no encontrado.")
     data = payload.model_dump(exclude_unset=True)
+    if target.id == admin.id and (data.get("is_active") is False or data.get("role", "ADMIN") != "ADMIN"):
+        raise ConflictError("CANNOT_DISABLE_SELF", "No puede desactivar o quitar el rol administrador a su cuenta.")
+    if any(data.get(key) is None for key in data if key in {"display_name", "role", "pin", "is_active"}):
+        raise ConflictError("NULL_USER_FIELD", "Los datos de usuario no pueden quedar vacíos.")
+    if "pin" in data or "role" in data or "is_active" in data:
+        db.query(AuthSession).filter(AuthSession.user_id == user_id).update({"revoked_at": datetime.now(UTC)})
     if "pin" in data:
         target.pin_hash = hash_pin(data.pop("pin"))
     if data.get("role") is not None:
@@ -60,6 +67,7 @@ def disable_user(user_id: UUID, db: DbSession, admin: AdminUser) -> UserOut:
     if target.id == admin.id:
         raise ConflictError("CANNOT_DISABLE_SELF", "No puede desactivar su propia cuenta.")
     target.is_active = False
+    db.query(AuthSession).filter(AuthSession.user_id == user_id).update({"revoked_at": datetime.now(UTC)})
     db.commit()
     db.refresh(target)
     return UserOut.model_validate(target)

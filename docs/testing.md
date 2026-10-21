@@ -9,13 +9,13 @@ estáticos (TypeScript + ESLint) y E2E (Playwright).
 # ── Backend ────────────────────────────────────────────────
 cd backend
 .venv/bin/python -m ruff check .        # lint
-.venv/bin/python -m pytest              # 59 tests (usa :5433/restaurante_test)
+.venv/bin/python -m pytest -ra          # esquema creado por Alembic en :5433/restaurante_test
 
 # ── Frontend ──────────────────────────────────────────────
 cd frontend
 npx tsc --noEmit                        # tipos
 npx eslint .                            # lint
-npx vitest run                          # 15 tests unitarios
+npx vitest run                          # incluye pagos perdidos y aislamiento de cola por usuario
 npm run build                           # tsc + vite build (incluye el service worker)
 
 # ── E2E ───────────────────────────────────────────────────
@@ -25,8 +25,15 @@ npx playwright test e2e/flow.spec.ts    # solo flujo principal
 npx playwright test e2e/offline.spec.ts # solo offline
 ```
 
-Prerrequisitos para todo: `docker compose up -d db db-test` levantado y backend migrado
-(`alembic upgrade head` + `python -m scripts.seed`).
+Prerrequisitos: `docker compose up -d db db-test`, dependencias instaladas y Chromium
+(`cd frontend && npx playwright install chromium`). Los fixtures aplican migraciones y siembran
+los datos automáticamente. Para E2E cree también `restaurante_e2e_test` en el contenedor de test:
+
+```bash
+docker compose exec -T db-test createdb -U restaurante restaurante_e2e_test
+```
+
+Este comando sólo se necesita si la base E2E aún no existe. Backend y E2E usan bases distintas.
 
 ## 2. Backend (§71)
 
@@ -38,10 +45,13 @@ Prerrequisitos para todo: `docker compose up -d db db-test` levantado y backend 
 | `tests/test_billing.py` | división por ítems/monto, pagos, saldos, comprobantes |
 | `tests/test_shifts_reports.py` | turno abierto/cerrado, bloqueo con pedidos abiertos, snapshot, reportes |
 | `tests/test_e2e.py` | escenario completo de negocio en backend (§73 a nivel API) |
+| `tests/test_production.py` | concordancia de migraciones, RLS, sesiones revocadas, aislamiento idempotente, comprobantes privados, importes y configuración segura |
+| `tests/test_concurrency.py` | concurrencia PostgreSQL real: comandas, pagos, mesas y turnos |
 
-Cómo funcionan: `conftest.py` apunta `DATABASE_URL` a `restaurante_test`, crea el esquema con
-`Base.metadata.create_all`, trunca las tablas de operación entre tests y siembra usuarios,
-mesas y carta propios de test.
+Cómo funcionan: `conftest.py` fuerza `DATABASE_ENV=test`, valida `TEST_DATABASE_URL` y ejecuta
+`alembic upgrade head`, trunca sólo la base dedicada y siembra usuarios, mesas y carta de test.
+No usa `create_all`. `alembic check` y la prueba de metadata impiden omitir una migración.
+Los uploads de pruebas se aíslan en directorios temporales. La suite conserva el esquema al terminar.
 
 Cobertura mínima exigida por el speac: estados, transiciones, permisos, idempotencia,
 turnos, reportes y errores `{error:{code,message,details}}`.
@@ -54,6 +64,8 @@ turnos, reportes y errores `{error:{code,message,details}}`.
 | `src/offline/queue.test.ts` | cola: `LOCAL_PENDING`, sync + `server_resource_id`, backoff en fallo de red, `SYNC_ERROR` ante 4xx, dependencia pedido→comanda, notificación de cambios |
 | `src/components/SyncIndicator.test.tsx` | estados visuales de la cola (🟠🔵🟢🔴) |
 | `src/hooks/useElapsed.test.ts` | cronómetros y formato de dinero/tiempos |
+| `src/pages/BillingPage.test.tsx` | respuesta de pago perdida, recarga y verificación del mismo UUID con saldo cero |
+| `src/api/client.test.ts` | límite de reintento de renovación del token |
 
 Entorno `jsdom` con `fake-indexeddb` (`src/test/setup.ts`).
 
@@ -70,8 +82,11 @@ cd backend && .venv/bin/python -m ruff check .
 Configuración: `frontend/playwright.config.ts`
 
 - `testDir: e2e`, un worker, sin reintentos, viewport móvil 390×844.
-- `webServer` arranca `vite` (:5173) y `uvicorn` (:8000) si no están corriendo.
-- `globalSetup` ejecuta `python -m scripts.reset_db` para partir de datos limpios.
+- `webServer` construye la PWA y arranca `vite preview` (:5174) y `uvicorn` (:8010).
+  No reutiliza servidores existentes. Los puertos se pueden cambiar con `E2E_APP_PORT` / `E2E_API_PORT`.
+- `globalSetup` aplica migraciones, exige `alembic check`, siembra datos y resetea exclusivamente
+  `restaurante_e2e_test` (o `TEST_DATABASE_URL` explícita con nombre test/e2e).
+- El flujo principal usa viewport móvil de 390×844. El offline simula pérdida real de red del navegador.
 
 | Escenario | Archivo | Pasos clave |
 |---|---|---|

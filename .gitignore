@@ -29,3 +29,8 @@ coverage/
 # Artefactos
 *.log
 frontend/dev-dist/
+frontend/test-results/
+frontend/playwright-report/
+backend/uploads/
+backups/
+*.dump

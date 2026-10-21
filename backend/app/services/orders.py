@@ -34,6 +34,8 @@ def recompute_totals(order: Order) -> None:
             subtotal += Decimal(item.unit_price_snapshot) * item.quantity
     order.subtotal = subtotal
     order.total = subtotal
+    if subtotal < order.paid_amount:
+        raise ConflictError("TOTAL_BELOW_PAID", "El cambio dejaría el total por debajo del monto ya cobrado.")
 
 
 def compute_status(order: Order) -> str:
@@ -62,11 +64,13 @@ def apply_status(order: Order) -> str:
     return order.status
 
 
-def broadcast_order_ready(order: Order) -> None:
-    hub.broadcast(
+def broadcast_order_ready(db: Session, order: Order) -> None:
+    hub.after_commit(
+        db,
         "order.ready",
         {
             "order_id": str(order.id),
+            "created_by_waiter_id": str(order.created_by_waiter_id),
             "table_name": order.table_name,
             "table_number": order.table_number,
             "message": f"{order.table_name or f'Mesa {order.table_number}'} — Pedido listo",
@@ -96,6 +100,7 @@ def item_event_payload(item: OrderItem) -> dict:
     order = item.order
     return {
         "item_id": str(item.id),
+        "created_by_waiter_id": str(order.created_by_waiter_id) if order else None,
         "order_id": str(item.order_id),
         "table_name": order.table_name if order else None,
         "table_number": order.table_number if order else None,
@@ -178,7 +183,7 @@ def create_order(
     )
     db.add(order)
     db.flush()
-    hub.broadcast("order.created", order_event_payload(order), {"waiters", "admin"})
+    hub.after_commit(db, "order.created", order_event_payload(order), {"waiters", "admin"})
     return order
 
 
@@ -252,11 +257,13 @@ def create_command(
     db.flush()
 
     command.items  # noqa: B018 - carga la relación para la respuesta
-    hub.broadcast(
+    hub.after_commit(
+        db,
         "command.created",
         {
             "order_id": str(order.id),
             "command_id": str(command.id),
+            "created_by_waiter_id": str(order.created_by_waiter_id),
             "sequence_number": command.sequence_number,
             "table_name": order.table_name,
             "table_number": order.table_number,
@@ -265,9 +272,9 @@ def create_command(
         },
         {"kitchen", "grill", "admin", "waiters"},
     )
-    hub.broadcast("order.updated", order_event_payload(order), {"waiters", "admin"})
+    hub.after_commit(db, "order.updated", order_event_payload(order), {"waiters", "admin"})
     if order.status == OrderStatus.READY and previous_order_status != OrderStatus.READY:
-        broadcast_order_ready(order)
+        broadcast_order_ready(db, order)
     return command
 
 
@@ -321,17 +328,21 @@ def change_item_status(
     apply_status(order)
     db.flush()
 
-    hub.broadcast("order_item.updated", item_event_payload(item), {"admin"})
-    area_channel = {
-        PreparationArea.KITCHEN: "kitchen",
-        PreparationArea.GRILL: "grill",
-    }.get(PreparationArea(item.preparation_area), "admin") if item.requires_preparation else "waiters"
-    hub.broadcast("order_item.updated", item_event_payload(item), {area_channel})
+    hub.after_commit(db, "order_item.updated", item_event_payload(item), {"admin"})
+    area_channel = (
+        {
+            PreparationArea.KITCHEN: "kitchen",
+            PreparationArea.GRILL: "grill",
+        }.get(PreparationArea(item.preparation_area), "admin")
+        if item.requires_preparation
+        else "waiters"
+    )
+    hub.after_commit(db, "order_item.updated", item_event_payload(item), {area_channel})
 
     if new_status == ItemStatus.READY:
-        hub.broadcast("order_item.ready", item_event_payload(item), {"waiters", "admin", "kitchen", "grill"})
+        hub.after_commit(db, "order_item.ready", item_event_payload(item), {"waiters", "admin", "kitchen", "grill"})
     if order.status == OrderStatus.READY and previous_order_status != OrderStatus.READY:
-        broadcast_order_ready(order)
+        broadcast_order_ready(db, order)
     return item
 
 
@@ -360,10 +371,10 @@ def cancel_item(
     apply_status(order)
     db.flush()
 
-    hub.broadcast("order_item.updated", item_event_payload(item), {"admin", "kitchen", "grill", "waiters"})
-    hub.broadcast("order.updated", order_event_payload(order), {"waiters", "admin"})
+    hub.after_commit(db, "order_item.updated", item_event_payload(item), {"admin", "kitchen", "grill", "waiters"})
+    hub.after_commit(db, "order.updated", order_event_payload(order), {"waiters", "admin"})
     if order.status == OrderStatus.READY and previous_order_status != OrderStatus.READY:
-        broadcast_order_ready(order)
+        broadcast_order_ready(db, order)
     return item
 
 

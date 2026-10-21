@@ -54,7 +54,7 @@ function OrderCard({ order }: { order: Order }) {
 }
 
 export function ActiveOrdersPage() {
-  const orders = useQuery({ queryKey: ["orders", "active"], queryFn: () => ordersApi.active(), retry: false });
+  const orders = useQuery({ queryKey: ["orders", "active"], queryFn: () => ordersApi.active(), refetchInterval: 15000, retry: false });
   const records = usePendingOrders((state) => state.records);
   const pending = useMemo(
     () => records.filter((record) => !record.server_order_id && !record.error),

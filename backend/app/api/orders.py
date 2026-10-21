@@ -25,6 +25,7 @@ from app.schemas.orders import (
     ItemStatusRequest,
     ItemUpdate,
     OrderCreate,
+    OrderItemOut,
     OrderOut,
 )
 from app.services import orders as order_service
@@ -36,6 +37,16 @@ IdempotencyKeyHeader = Annotated[UUID | None, Header(alias="Idempotency-Key")]
 
 def _serialize(order: Order) -> dict:
     return order_service.serialize_order(order)
+
+
+def _mutation_response(user: User, order: Order) -> dict:
+    if user.role in {"KITCHEN", "GRILL"}:
+        return {
+            "id": str(order.id), "status": order.status,
+            "items": [OrderItemOut.model_validate(item).model_dump(mode="json")
+                      for item in order.items if item.preparation_area == user.role],
+        }
+    return OrderOut.model_validate(order).model_dump(mode="json")
 
 
 def _authorize_order_read(user: User, order: Order) -> None:
@@ -174,7 +185,7 @@ def _create_command_impl(
         body["order"] = _serialize(order)
         return 201, body
 
-    return execute_idempotent(db, key, user.id, "CREATE_COMMAND", operation)
+    return execute_idempotent(db, key, user.id, "CREATE_COMMAND", operation, scope=str(order.id))
 
 
 @router.post("/{order_id}/commands")
@@ -246,39 +257,38 @@ def update_item(
     return OrderOut.model_validate(order)
 
 
-@router.post("/{order_id}/items/{item_id}/cancel", response_model=OrderOut)
+@router.post("/{order_id}/items/{item_id}/cancel")
 def cancel_item(
     order_id: UUID,
     item_id: UUID,
     payload: ItemCancelRequest,
     db: DbSession,
     user: CurrentUser,
+    idem_key: IdempotencyKeyHeader = None,
     device_id: Annotated[str | None, Header(alias="X-Device-Id")] = None,
-) -> OrderOut:
+) -> JSONResponse:
     order = order_service.get_active_order(db, order_id)
     item = db.get(OrderItem, item_id)
     if item is None or item.order_id != order.id:
         raise NotFoundError("ITEM_NOT_FOUND", "Producto no encontrado en este pedido.")
-    _authorize_cancellation(user, order, item)
-    ensure_order_in_open_shift(db, order.shift_id)
-    before = {"status": item.status}
-    order_service.cancel_item(db, user, item, payload.reason)
-    audit_actions.audit(
-        db,
-        user_id=user.id,
-        action=audit_actions.ITEM_CANCELLED,
-        entity_type="order_items",
-        entity_id=item.id,
-        before_data=before,
-        after_data={
-            "status": item.status,
-            "reason": payload.reason,
-            "after_preparation_started": item.cancelled_after_preparation_started,
-        },
-        device_id=device_id,
+    def operation() -> tuple[int, dict]:
+        ensure_order_in_open_shift(db, order.shift_id)
+        _authorize_cancellation(user, order, item)
+        before = {"status": item.status}
+        order_service.cancel_item(db, user, item, payload.reason)
+        audit_actions.audit(
+            db, user_id=user.id, action=audit_actions.ITEM_CANCELLED,
+            entity_type="order_items", entity_id=item.id, before_data=before,
+            after_data={"status": item.status, "reason": payload.reason,
+                        "after_preparation_started": item.cancelled_after_preparation_started},
+            device_id=device_id,
+        )
+        return 200, _mutation_response(user, order)
+
+    status, body = execute_idempotent(
+        db, payload.client_operation_id or idem_key, user.id, "CANCEL_ORDER_ITEM", operation, scope=str(item.id),
     )
-    db.commit()
-    return OrderOut.model_validate(order)
+    return JSONResponse(status_code=status, content=body)
 
 
 @router.post("/{order_id}/items/{item_id}/status")
@@ -300,6 +310,8 @@ def change_status(
 
     def operation() -> tuple[int, dict]:
         ensure_order_in_open_shift(db, order.shift_id)
+        if user.role == "WAITER":
+            _authorize_order_read(user, order)
         _authorize_status_change(user, item, payload.status)
         before = {"status": item.status}
         order_service.change_item_status(db, user, item, payload.status)
@@ -313,9 +325,9 @@ def change_status(
             after_data={"status": item.status},
             device_id=device_id,
         )
-        return 200, OrderOut.model_validate(order).model_dump(mode="json")
+        return 200, _mutation_response(user, order)
 
-    status, body = execute_idempotent(db, key, user.id, "UPDATE_ORDER_ITEM_STATUS", operation)
+    status, body = execute_idempotent(db, key, user.id, "UPDATE_ORDER_ITEM_STATUS", operation, scope=str(item.id))
     return JSONResponse(status_code=status, content=body)
 
 

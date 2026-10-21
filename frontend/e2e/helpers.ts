@@ -14,7 +14,8 @@ export async function ensureShiftOpen(page: Page): Promise<void> {
   await page.goto("/turnos");
   await expect(page.getByRole("heading", { name: "Turnos", exact: true })).toBeVisible();
   const openButton = page.getByRole("button", { name: "Abrir turno", exact: true });
-  if (await openButton.isVisible().catch(() => false)) {
+  await expect(page.getByRole("heading", { name: /^(Turno abierto|No hay turno abierto)$/ })).toBeVisible();
+  if (await openButton.isVisible()) {
     await openButton.click();
   }
   await expect(page.getByRole("heading", { name: "Turno abierto", exact: true })).toBeVisible();

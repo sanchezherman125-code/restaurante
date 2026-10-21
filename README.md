@@ -9,14 +9,18 @@ tiempo real por WebSocket y modo offline V1 (cola de sincronización con idempot
 
 Especificación completa: [`speac`](./speac). Documentación técnica: [`docs/`](./docs).
 
+Producción: use [render.yaml](./render.yaml), [.env.production.example](./.env.production.example)
+y la [guía de publicación](./docs/deployment.md). El seed y las cuentas de ejemplo de esta
+página son exclusivamente de desarrollo/pruebas.
+
 ---
 
 ## 1. Requisitos
 
 | Requisito | Versión mínima |
 |---|---|
-| Python | 3.12 |
-| Node.js | 20 |
+| Python | 3.14 (versión verificada) |
+| Node.js | 22 |
 | Docker + Docker Compose | cualquiera con `compose v2` |
 | Git | cualquiera |
 
@@ -63,7 +67,7 @@ Verificar: `curl http://localhost:8000/health` → `{"status":"ok",...}`.
 
 ```bash
 cd frontend
-npm install
+npm ci
 npm run dev          # http://localhost:5173 (proxy /api y ws → :8000)
 ```
 
@@ -84,13 +88,14 @@ npm run preview      # sirve el build en :4173
 | `cocina1` | `1234` | KITCHEN |
 | `parrilla1` | `1234` | GRILL |
 
-### 2.6. Reinicio rápido de datos de operación
+### 2.6. Reinicio de la base E2E dedicada
 
-Borra pedidos/turnos/gastos/pagos y repone la disponibilidad de la carta
-(conserva usuarios, mesas y carta):
+Borra exclusivamente datos de pruebas; requiere una base cuyo nombre contenga test/e2e.
+Conserva usuarios, mesas y carta. No funciona sobre la base de desarrollo ni producción:
 
 ```bash
-cd backend && .venv/bin/python -m scripts.reset_db
+cd backend
+DATABASE_ENV=test TEST_DATABASE_URL=postgresql+psycopg://restaurante:restaurante@localhost:5433/restaurante_e2e_test .venv/bin/python -m scripts.reset_db
 ```
 
 ## 3. Tests

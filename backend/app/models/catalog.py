@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text, func
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, Numeric, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -24,6 +24,7 @@ class MenuCategory(Base):
 
 class MenuItem(Base):
     __tablename__ = "menu_items"
+    __table_args__ = (CheckConstraint("price > 0", name="ck_menu_item_price"),)
 
     id: Mapped[uuid.UUID] = uuid_pk()
     category_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("menu_categories.id"), index=True)

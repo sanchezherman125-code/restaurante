@@ -3,6 +3,8 @@ import { persist } from "zustand/middleware";
 import type { Role, User } from "../types/api";
 import { authApi } from "../api/endpoints";
 import { clearTokens, getDeviceId, getAccessToken, setTokens } from "../api/client";
+import { listOperations } from "../offline/queue-db";
+import { useUi } from "./ui";
 
 interface SessionState {
   user: User | null;
@@ -26,6 +28,12 @@ export const useSession = create<SessionState>()(
         return user;
       },
       logout: async () => {
+        const pending = (await listOperations()).some((op) => op.status !== "SYNCED"
+          && (!op.owner_user_id || op.owner_user_id === get().user?.id));
+        if (pending) {
+          useUi.getState().toast("warning", "Operaciones pendientes", "Sincronice o resuelva los pendientes antes de cerrar sesión.");
+          return;
+        }
         try {
           await authApi.logout();
         } catch {

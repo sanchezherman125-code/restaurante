@@ -15,7 +15,7 @@ class SplitItemCreate(BaseModel):
 class SplitCreate(BaseModel):
     split_type: SplitType
     label: str | None = Field(default=None, max_length=120)
-    amount: Decimal | None = Field(default=None, gt=0)
+    amount: Decimal | None = Field(default=None, gt=0, max_digits=12, decimal_places=2)
     items: list[SplitItemCreate] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -26,6 +26,8 @@ class SplitCreate(BaseModel):
         else:
             if not self.items:
                 raise ValueError("items es obligatorio para división por productos")
+            if len({item.order_item_id for item in self.items}) != len(self.items):
+                raise ValueError("Cada producto debe aparecer una sola vez en la división")
         return self
 
 
@@ -42,7 +44,7 @@ class SplitOut(BaseModel):
 
 class PaymentCreate(BaseModel):
     method: PaymentMethod
-    amount: Decimal = Field(gt=0)
+    amount: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
     split_id: UUID | None = None
     client_operation_id: UUID | None = None
 

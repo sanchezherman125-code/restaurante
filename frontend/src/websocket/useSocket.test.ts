@@ -1,23 +1,44 @@
 import { describe, expect, it } from "vitest";
-import { canReceiveCommandNotification, isDuplicateNotification, orderItemReadyTitle, shouldUseSystemPush } from "./useSocket";
+import { canReceiveCommandNotification, isDuplicateNotification, isSilentEvent, orderItemReadyTitle, shouldUseSystemPush, taskProgressTitle } from "./useSocket";
 
-describe("notificaciones de order_item.ready", () => {
-  it.each([
-    ["KITCHEN", "GRILL", "Cocina terminó — Lomo saltado"],
-    ["KITCHEN", "WAITER", "Plato listo — Lomo saltado"],
-    ["GRILL", "KITCHEN", "Parrilla terminó — Lomo saltado"],
-    ["GRILL", "WAITER", "Plato listo — Lomo saltado"],
-  ])("muestra el texto correcto para %s/%s", (preparationArea, role, expected) => {
-    expect(orderItemReadyTitle(role, { preparation_area: preparationArea, name: "Lomo saltado" })).toBe(expected);
+describe("notificaciones de order_item.ready (plato completo)", () => {
+  it("avisa solo al mesero, una vez por plato, sin importar qué área terminó al final", () => {
+    for (const area of ["KITCHEN", "GRILL"]) {
+      expect(orderItemReadyTitle("WAITER", { preparation_area: area, name: "Alitas con papas" })).toBe(
+        "Plato listo — Alitas con papas",
+      );
+    }
   });
 
-  it.each([
-    ["KITCHEN", "KITCHEN"],
-    ["KITCHEN", "ADMIN"],
-    ["GRILL", "GRILL"],
-    ["GRILL", "ADMIN"],
-  ])("no muestra toast para %s/%s", (preparationArea, role) => {
-    expect(orderItemReadyTitle(role, { preparation_area: preparationArea, name: "Lomo saltado" })).toBeNull();
+  it.each(["KITCHEN", "GRILL", "ADMIN"])("no muestra toast de plato completo a %s", (role) => {
+    expect(orderItemReadyTitle(role, { preparation_area: "KITCHEN", name: "Lomo saltado" })).toBeNull();
+  });
+});
+
+describe("un solo aviso por finalización", () => {
+  it("un order_item.ready marcado silent solo actualiza pantallas: el aviso lo da order.ready", () => {
+    expect(isSilentEvent({ silent: true, name: "Alitas con papas" })).toBe(true);
+    expect(isSilentEvent({ silent: false })).toBe(false);
+    expect(isSilentEvent({ name: "Alitas con papas" })).toBe(false);
+  });
+});
+
+describe("avance de una tarea en un plato compartido", () => {
+  const base = { name: "Alitas con papas", task_area: "KITCHEN", task_status: "READY", status: "PREPARING", areas: ["GRILL", "KITCHEN"] };
+
+  it("informa a la otra área cuando termina su parte", () => {
+    expect(taskProgressTitle("GRILL", base)).toBe("Cocina terminó — Alitas con papas");
+  });
+
+  it("no avisa al área que terminó, a áreas que no participan, ni al mesero", () => {
+    expect(taskProgressTitle("KITCHEN", base)).toBeNull();
+    expect(taskProgressTitle("GRILL", { ...base, areas: ["KITCHEN"] })).toBeNull();
+    expect(taskProgressTitle("WAITER", base)).toBeNull();
+  });
+
+  it("no anuncia nada si el plato ya está completo ni si la tarea apenas comenzó", () => {
+    expect(taskProgressTitle("GRILL", { ...base, status: "READY" })).toBeNull();
+    expect(taskProgressTitle("GRILL", { ...base, task_status: "PREPARING" })).toBeNull();
   });
 });
 

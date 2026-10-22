@@ -37,6 +37,13 @@ export function resetBackoff(): void {
   localStorage.removeItem(BACKOFF_KEY);
 }
 
+let lastCreatedAt = 0;
+/** Marca de tiempo estrictamente creciente: dos operaciones nunca empatan y se reenvían en el orden en que ocurrieron. */
+function nextCreatedAt(): number {
+  lastCreatedAt = Math.max(Date.now(), lastCreatedAt + 1);
+  return lastCreatedAt;
+}
+
 export function createOperation(newOp: NewOperation, status: QueuedOperation["status"] = "LOCAL_PENDING"): QueuedOperation {
   return {
     client_operation_id: crypto.randomUUID(),
@@ -46,7 +53,7 @@ export function createOperation(newOp: NewOperation, status: QueuedOperation["st
     method: newOp.method,
     body: newOp.body,
     parent_operation_id: newOp.parent_operation_id ?? null,
-    created_at: Date.now(),
+    created_at: nextCreatedAt(),
     attempt_count: 0,
     last_attempt_at: null,
     status,

@@ -22,7 +22,7 @@ from alembic import command  # noqa: E402
 from app.core.security import hash_pin, rate_limiter  # noqa: E402
 from app.db import Base, SessionLocal, engine  # noqa: E402
 from app.main import app  # noqa: E402
-from app.models import MenuCategory, MenuItem, RestaurantTable, User  # noqa: E402
+from app.models import MenuCategory, MenuItem, MenuPreparationStep, RestaurantTable, User  # noqa: E402
 
 OPERATIONAL_TABLES = [
     "auth_sessions",
@@ -34,6 +34,7 @@ OPERATIONAL_TABLES = [
     "purchase_list_items",
     "expenses",
     "payments",
+    "order_item_preparation_tasks",
     "bill_split_items",
     "bill_splits",
     "order_items",
@@ -93,16 +94,20 @@ def _seed_catalog(db) -> None:
         db.add(category)
         db.flush()
         for name, price, area, minutes in items:
-            db.add(
-                MenuItem(
-                    category_id=category.id,
-                    name=name,
-                    price=Decimal(price),
-                    preparation_area=None if area == "WAITER" else area,
-                    requires_preparation=area != "WAITER",
-                    expected_prep_minutes=minutes,
-                )
+            menu_item = MenuItem(
+                category_id=category.id,
+                name=name,
+                price=Decimal(price),
+                preparation_area=None if area == "WAITER" else area,
+                requires_preparation=area != "WAITER",
+                expected_prep_minutes=minutes,
             )
+            db.add(menu_item)
+            db.flush()
+            if area != "WAITER":
+                db.add(MenuPreparationStep(
+                    menu_item_id=menu_item.id, name=name, area=area, expected_minutes=minutes, sort_order=0,
+                ))
     db.commit()
 
 

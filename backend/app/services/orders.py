@@ -3,11 +3,22 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.errors import ConflictError, NotFoundError, ValidationAppError
-from app.models import Command, MenuCategory, MenuItem, Order, OrderItem, Shift, User
-from app.models.enums import ItemStatus, OrderStatus, OrderType, PreparationArea
+from app.models import (
+    Command,
+    MenuCategory,
+    MenuItem,
+    Order,
+    OrderItem,
+    OrderItemPreparationTask,
+    Shift,
+    User,
+)
+from app.models.enums import ItemStatus, OrderStatus, OrderType, PreparationArea, TaskStatus
+from app.services import preparation as prep
 from app.ws.hub import hub
 
 logger = logging.getLogger("app.orders")
@@ -111,10 +122,22 @@ def item_event_payload(item: OrderItem) -> dict:
         "status": item.status,
         "requires_preparation": item.requires_preparation,
         "preparation_area": item.preparation_area,
+        "areas": sorted(prep.item_areas(item)),
         "expected_prep_minutes": item.expected_prep_minutes_snapshot,
         "preparation_started_at": item.preparation_started_at.isoformat() if item.preparation_started_at else None,
         "ready_at": item.ready_at.isoformat() if item.ready_at else None,
         "cancelled_after_preparation_started": item.cancelled_after_preparation_started,
+    }
+
+
+def task_event_payload(item: OrderItem, tasks: list, status: str) -> dict:
+    """Progreso de una o más tareas de un plato; sin importes ni datos del cliente."""
+    return {
+        **item_event_payload(item),
+        "task_ids": [str(t.id) for t in tasks],
+        "task_names": [t.name for t in tasks],
+        "task_area": tasks[0].area if tasks else None,
+        "task_status": status,
     }
 
 
@@ -249,7 +272,7 @@ def create_command(
         if existing is not None:
             return existing
 
-    resolved: list[tuple[MenuItem, dict]] = []
+    resolved: list[tuple[MenuItem, dict, list[prep.StepSpec]]] = []
     for entry in items:
         menu_item = db.get(MenuItem, entry["menu_item_id"])
         if menu_item is None or not menu_item.is_active:
@@ -260,7 +283,12 @@ def create_command(
                 f"'{menu_item.name}' está agotado y no puede agregarse.",
                 {"menu_item_id": str(menu_item.id)},
             )
-        resolved.append((menu_item, entry))
+        specs = (
+            prep.steps_for_menu_item(menu_item, prep.load_steps(db, menu_item.id))
+            if menu_item.requires_preparation
+            else []
+        )
+        resolved.append((menu_item, entry, specs))
 
     command = Command(
         order_id=order.id,
@@ -273,7 +301,7 @@ def create_command(
     db.add(command)
     db.flush()
 
-    for menu_item, entry in resolved:
+    for menu_item, entry, specs in resolved:
         item = OrderItem(
             command_id=command.id,
             order_id=order.id,
@@ -282,12 +310,15 @@ def create_command(
             unit_price_snapshot=menu_item.price,
             quantity=entry.get("quantity", 1),
             requires_preparation=menu_item.requires_preparation,
-            preparation_area=menu_item.preparation_area,
+            preparation_area=None,
             status=ItemStatus.PENDING,
             notes=entry.get("notes"),
             replacement_description=entry.get("replacement_description"),
-            expected_prep_minutes_snapshot=menu_item.expected_prep_minutes,
+            expected_prep_minutes_snapshot=None,
         )
+        if specs:
+            # Congela la receta vigente: cambios posteriores del catálogo no alteran esta comanda.
+            prep.attach_tasks(item, specs)
         db.add(item)
 
     db.flush()
@@ -309,9 +340,9 @@ def create_command(
             "table_name": order.table_name,
             "table_number": order.table_number,
             "created_at": command.created_at.isoformat() if command.created_at else None,
-            "areas": sorted({i.preparation_area for i in command.items if i.preparation_area}),
+            "areas": sorted({a for i in command.items for a in prep.item_areas(i)}),
         },
-        {"kitchen", "grill", "admin", "waiters"},
+        {"admin", "waiters"} | {prep.AREA_CHANNEL[a] for i in command.items for a in prep.item_areas(i)},
     )
     hub.after_commit(db, "order.updated", order_event_payload(order), {"waiters", "admin"})
     if order.status == OrderStatus.READY and previous_order_status != OrderStatus.READY:
@@ -335,33 +366,100 @@ def validate_transition(current: ItemStatus, new: ItemStatus, requires_preparati
         )
 
 
+def _publish_item_change(
+    db: Session,
+    item: OrderItem,
+    previous_order_status: str,
+    *,
+    changed_tasks: list,
+    task_status: str | None,
+    refresh: prep.ItemRefresh,
+    item_changed: bool,
+) -> None:
+    order = item.order
+    channels = prep.item_channels(item)
+    if changed_tasks and task_status:
+        # Los tableros de ambas áreas reflejan el avance; no implica que el plato esté completo.
+        hub.after_commit(db, "preparation_task.updated", task_event_payload(item, changed_tasks, task_status), channels)
+    if item_changed:
+        hub.after_commit(db, "order_item.updated", item_event_payload(item), channels | {"waiters"})
+    order_became_ready = order.status == OrderStatus.READY and previous_order_status != OrderStatus.READY
+    if refresh.became_ready:
+        # Única finalización del plato: solo ocurre al cruzar PENDING/PREPARING → READY bajo bloqueo.
+        # Si esa misma finalización completa el pedido, el aviso visible/Push es ``order.ready``; el evento del
+        # plato se sigue emitiendo para actualizar pantallas, pero ``silent`` evita un segundo aviso al mesero.
+        payload = {**item_event_payload(item), "silent": order_became_ready}
+        hub.after_commit(db, "order_item.ready", payload, {"waiters", "admin"})
+    if order_became_ready:
+        broadcast_order_ready(db, order)
+
+
+def change_task_statuses(
+    db: Session,
+    item: OrderItem,
+    tasks: list,
+    new_status: TaskStatus,
+) -> list:
+    """Avanza tareas de un plato y deriva el estado comercial. Devuelve las tareas que cambiaron.
+
+    Llamar con turno, pedido y plato bloqueados. Repetir un estado ya alcanzado no cambia nada.
+    """
+    if item.status == ItemStatus.CANCELLED:
+        raise ConflictError("ITEM_CANCELLED", "El producto fue cancelado.")
+    now = utcnow()
+    changed = prep.advance_tasks(tasks, new_status, now)
+    if not changed:
+        return []
+    db.flush()
+    order = item.order
+    previous_order_status = order.status
+    previous_item_status = item.status
+    refresh = prep.refresh_item_from_tasks(item, now)
+    db.flush()
+    apply_status(order)
+    db.flush()
+    _publish_item_change(
+        db,
+        item,
+        previous_order_status,
+        changed_tasks=changed,
+        task_status=new_status.value,
+        refresh=refresh,
+        item_changed=item.status != previous_item_status,
+    )
+    return changed
+
+
 def change_item_status(
     db: Session,
     user: User,
     item: OrderItem,
     new_status: ItemStatus,
-) -> OrderItem:
+) -> bool:
+    """Cambio a nivel de plato. PREPARING/READY avanzan las tareas del área del usuario; DELIVERED es del plato.
+
+    Devuelve False cuando la solicitud ya estaba aplicada (reintento o mensaje atrasado).
+    """
     current = ItemStatus(item.status)
     if new_status == ItemStatus.CANCELLED:
         raise ValidationAppError("USE_CANCEL_ENDPOINT", "Use el endpoint de cancelación.")
+
+    if item.requires_preparation and new_status in (ItemStatus.PREPARING, ItemStatus.READY):
+        prep.ensure_item_tasks(db, item)
+        prep.lock_item_tasks(db, item.id)
+        areas = prep.item_areas(item) if user.role == "ADMIN" else {prep.ROLE_AREA.get(user.role, "")}
+        tasks = prep.tasks_in_areas(item, areas)
+        if not tasks:
+            raise ConflictError(
+                "INVALID_STATUS_TRANSITION", "El producto no tiene tareas para su área.", {"current": current}
+            )
+        return bool(change_task_statuses(db, item, tasks, TaskStatus(new_status.value)))
+
     validate_transition(current, new_status, item.requires_preparation)
 
     now = utcnow()
-    if new_status == ItemStatus.PREPARING:
-        if item.preparation_started_at is None:
-            item.preparation_started_at = now
-    elif new_status == ItemStatus.READY:
-        if item.preparation_started_at is None:
-            item.preparation_started_at = now
-        item.ready_at = now
-    elif new_status == ItemStatus.DELIVERED:
-        if item.preparation_started_at is None and item.requires_preparation:
-            item.preparation_started_at = now
-        if item.ready_at is None and item.requires_preparation:
-            item.ready_at = now
-        item.delivered_at = now
-
     item.status = new_status
+    item.delivered_at = now
     db.flush()
 
     order = item.order
@@ -369,22 +467,11 @@ def change_item_status(
     apply_status(order)
     db.flush()
 
-    hub.after_commit(db, "order_item.updated", item_event_payload(item), {"admin"})
-    area_channel = (
-        {
-            PreparationArea.KITCHEN: "kitchen",
-            PreparationArea.GRILL: "grill",
-        }.get(PreparationArea(item.preparation_area), "admin")
-        if item.requires_preparation
-        else "waiters"
-    )
-    hub.after_commit(db, "order_item.updated", item_event_payload(item), {area_channel})
-
-    if new_status == ItemStatus.READY:
-        hub.after_commit(db, "order_item.ready", item_event_payload(item), {"waiters", "admin", "kitchen", "grill"})
+    channels = prep.item_channels(item) if item.requires_preparation else {"admin", "waiters"}
+    hub.after_commit(db, "order_item.updated", item_event_payload(item), channels | {"waiters"})
     if order.status == OrderStatus.READY and previous_order_status != OrderStatus.READY:
         broadcast_order_ready(db, order)
-    return item
+    return True
 
 
 def cancel_item(
@@ -393,6 +480,7 @@ def cancel_item(
     item: OrderItem,
     reason: str | None,
 ) -> OrderItem:
+    """Cancela el plato completo y todas sus tareas, en cualquier área, como una sola operación."""
     ensure_order_cancellable(item.order)
     current = ItemStatus(item.status)
     if current not in (ItemStatus.PENDING, ItemStatus.PREPARING):
@@ -411,11 +499,16 @@ def cancel_item(
     if new_total < item.order.paid_amount:
         raise ConflictError("TOTAL_BELOW_PAID", "El cambio dejaría el total por debajo del monto ya cobrado.")
 
+    prep.ensure_item_tasks(db, item)
+    prep.lock_item_tasks(db, item.id)
+    involved = prep.item_channels(item)
+    now = utcnow()
     item.status = ItemStatus.CANCELLED
-    item.cancelled_at = utcnow()
+    item.cancelled_at = now
     item.cancelled_by = user.id
     item.cancelled_after_preparation_started = current == ItemStatus.PREPARING
     item.cancellation_reason = reason
+    prep.cancel_tasks(item, now)
     db.flush()
 
     order = item.order
@@ -425,7 +518,7 @@ def cancel_item(
     apply_status(order)
     db.flush()
 
-    hub.after_commit(db, "order_item.updated", item_event_payload(item), {"admin", "kitchen", "grill", "waiters"})
+    hub.after_commit(db, "order_item.updated", item_event_payload(item), involved | {"waiters"})
     hub.after_commit(db, "order.updated", order_event_payload(order), {"waiters", "admin"})
     if order.status == OrderStatus.READY and previous_order_status != OrderStatus.READY:
         broadcast_order_ready(db, order)
@@ -438,21 +531,34 @@ def serialize_order(order: Order) -> dict:
     return OrderOut.model_validate(order).model_dump(mode="json")
 
 
-def active_orders_query(db: Session, area: str | None = None):
-    query = db.query(Order).filter(
-        Order.status.in_(
-            [
-                OrderStatus.OPEN,
-                OrderStatus.IN_PREPARATION,
-                OrderStatus.READY,
-                OrderStatus.DELIVERED,
-            ]
+def pending_preparation_exists():
+    """EXISTS: el pedido aún tiene platos con preparación sin entregar (independiente del estado de pago)."""
+    return (
+        select(OrderItem.id)
+        .where(
+            OrderItem.order_id == Order.id,
+            OrderItem.requires_preparation.is_(True),
+            OrderItem.status.in_([ItemStatus.PENDING, ItemStatus.PREPARING, ItemStatus.READY]),
         )
+        .correlate(Order)
+        .exists()
+    )
+
+
+def active_orders_query(db: Session, area: str | None = None):
+    """Pedidos con trabajo vivo; un pedido PAID sigue activo mientras queden platos por preparar o entregar."""
+    query = db.query(Order).filter(
+        Order.status.in_([OrderStatus.OPEN, OrderStatus.IN_PREPARATION, OrderStatus.READY, OrderStatus.DELIVERED])
+        | ((Order.status == OrderStatus.PAID) & pending_preparation_exists())
     )
     if area and area in {a.value for a in PreparationArea}:
-        query = query.join(OrderItem, OrderItem.order_id == Order.id).filter(
-            OrderItem.preparation_area == area,
-            OrderItem.status.notin_([ItemStatus.CANCELLED, ItemStatus.DELIVERED]),
+        query = (
+            query.join(OrderItem, OrderItem.order_id == Order.id)
+            .join(OrderItemPreparationTask, OrderItemPreparationTask.order_item_id == OrderItem.id)
+            .filter(
+                OrderItemPreparationTask.area == area,
+                OrderItem.status.notin_([ItemStatus.CANCELLED, ItemStatus.DELIVERED]),
+            )
         )
     return query.order_by(Order.created_at.asc()).distinct()
 

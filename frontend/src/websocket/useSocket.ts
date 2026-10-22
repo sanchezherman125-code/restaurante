@@ -22,20 +22,28 @@ const EVENT_TOASTS: Record<string, { role?: string[]; kind: "success" | "info" |
 };
 const PUSH_EVENTS = new Set(["order.ready", "command.created", "order_item.ready", "order.paid"]);
 
+/** Aviso de plato completo: solo para quien lo entrega. Se emite una única vez, cuando terminan todas las tareas. */
 export function orderItemReadyTitle(role: string | undefined, data: Record<string, unknown>): string | null {
-  const name = String(data["name"] ?? "Producto");
-  switch (data["preparation_area"]) {
-    case "KITCHEN":
-      if (role === "GRILL") return `Cocina terminó — ${name}`;
-      if (role === "WAITER") return `Plato listo — ${name}`;
-      return null;
-    case "GRILL":
-      if (role === "KITCHEN") return `Parrilla terminó — ${name}`;
-      if (role === "WAITER") return `Plato listo — ${name}`;
-      return null;
-    default:
-      return null;
-  }
+  if (role !== "WAITER") return null;
+  return `Plato listo — ${String(data["name"] ?? "Producto")}`;
+}
+
+const AREA_NAME: Record<string, string> = { KITCHEN: "Cocina", GRILL: "Parrilla" };
+const ROLE_AREA: Record<string, string> = { KITCHEN: "KITCHEN", GRILL: "GRILL" };
+
+/** Progreso de otra área sobre un plato compartido; nunca anuncia que el plato completo esté listo. */
+export function taskProgressTitle(role: string | undefined, data: Record<string, unknown>): string | null {
+  const ownArea = role ? ROLE_AREA[role] : undefined;
+  const taskArea = String(data["task_area"] ?? "");
+  const areas = Array.isArray(data["areas"]) ? data["areas"].map(String) : [];
+  if (!ownArea || data["task_status"] !== "READY" || taskArea === ownArea || !areas.includes(ownArea)) return null;
+  if (data["status"] === "READY" || data["status"] === "DELIVERED") return null;
+  return `${AREA_NAME[taskArea] ?? taskArea} terminó — ${String(data["name"] ?? "Producto")}`;
+}
+
+/** Evento solo de actualización: otro evento de la misma finalización ya avisa al usuario. */
+export function isSilentEvent(data: Record<string, unknown>): boolean {
+  return data["silent"] === true;
 }
 
 export function isDuplicateNotification(id: string | undefined): boolean {
@@ -71,6 +79,7 @@ function invalidateFor(event: string, client: QueryClient): void {
       void client.invalidateQueries({ queryKey: ["tables"] });
       break;
     case "command.created":
+    case "preparation_task.updated":
     case "order_item.updated":
     case "order_item.ready":
     case "order.ready":
@@ -129,6 +138,7 @@ class RealtimeClient {
   private handle(event: string, data: Record<string, unknown>, eventId?: string): void {
     if (!this.client) return;
     invalidateFor(event, this.client);
+    if (isSilentEvent(data)) return;
 
     const userId = useSession.getState().user?.id;
     const preferences = useUi.getState();
@@ -147,6 +157,11 @@ class RealtimeClient {
           vibrateNotification();
         }
       }
+      return;
+    }
+    if (event === "preparation_task.updated") {
+      const title = taskProgressTitle(role, data);
+      if (title) useUi.getState().toast("info", title);
       return;
     }
     if (event === "command.created" && !canReceiveCommandNotification(role, data)) return;

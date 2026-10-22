@@ -13,7 +13,7 @@ from app.models import (
     Shift,
     User,
 )
-from app.models.enums import ItemStatus
+from app.models.enums import ItemStatus, TaskStatus
 
 
 def _utc(dt: datetime | None) -> datetime | None:
@@ -23,25 +23,30 @@ def _utc(dt: datetime | None) -> datetime | None:
 
 
 def preparation_metrics(db: Session, orders: list[Order]) -> dict:
+    """Tiempos por área (tareas) y por plato (de la primera tarea iniciada a la última terminada)."""
     items = [i for order in orders for i in order.items if i.status != ItemStatus.CANCELLED]
-    measured = [i for i in items if i.requires_preparation and i.preparation_started_at and i.ready_at]
     durations = []
     by_area: dict[str, list[int]] = {}
     by_item: dict[str, list[int]] = {}
     within = 0
     expected_count = 0
 
-    for item in measured:
-        start = _utc(item.preparation_started_at)
-        end = _utc(item.ready_at)
-        seconds = max(0, int((end - start).total_seconds()))
-        durations.append(seconds)
-        by_area.setdefault(item.preparation_area, []).append(seconds)
-        by_item.setdefault(item.menu_item_name_snapshot, []).append(seconds)
-        if item.expected_prep_minutes_snapshot:
-            expected_count += 1
-            if seconds <= item.expected_prep_minutes_snapshot * 60:
-                within += 1
+    for item in items:
+        if not item.requires_preparation:
+            continue
+        tasks = [t for t in item.tasks if t.status != TaskStatus.CANCELLED]
+        for task in tasks:
+            if task.started_at and task.ready_at:
+                seconds = max(0, int((_utc(task.ready_at) - _utc(task.started_at)).total_seconds()))
+                by_area.setdefault(task.area, []).append(seconds)
+                if task.expected_minutes:
+                    expected_count += 1
+                    if seconds <= task.expected_minutes * 60:
+                        within += 1
+        if item.preparation_started_at and item.ready_at:
+            seconds = max(0, int((_utc(item.ready_at) - _utc(item.preparation_started_at)).total_seconds()))
+            durations.append(seconds)
+            by_item.setdefault(item.menu_item_name_snapshot, []).append(seconds)
 
     def avg(values: list[int]) -> float | None:
         return round(sum(values) / len(values), 1) if values else None

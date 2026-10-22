@@ -45,6 +45,13 @@ function ItemRow({
         <div className="row wrap" style={{ marginTop: 6 }}>
           <StatusChip status={item.status} />
           <span className={`timer ${late ? "late" : ""}`}>{formatElapsed(elapsed)}</span>
+          {item.tasks && item.tasks.length > 1 && item.status !== "CANCELLED" && item.status !== "DELIVERED"
+            ? item.tasks.map((task) => (
+                <span key={task.id} className={`chip ${task.status === "READY" ? "success" : ""}`}>
+                  {task.area === "GRILL" ? "Parrilla" : "Cocina"}: {task.status === "READY" ? "listo" : task.status === "PREPARING" ? "preparando" : "pendiente"}
+                </span>
+              ))
+            : null}
           {item.status === "PENDING" ? (
             <button className="btn ghost small" onClick={() => onCancel(item)}>
               Cancelar

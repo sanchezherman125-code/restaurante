@@ -3,7 +3,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, Numeric, String, Text, func
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
 from app.models.users import uuid_pk
@@ -40,4 +40,13 @@ class MenuItem(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    # Receta vigente. ``preparation_area``/``expected_prep_minutes`` quedan como resumen derivado (compatibilidad).
+    preparation_steps = relationship(
+        "MenuPreparationStep",
+        lazy="selectin",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="(MenuPreparationStep.sort_order, MenuPreparationStep.created_at, MenuPreparationStep.id)",
     )

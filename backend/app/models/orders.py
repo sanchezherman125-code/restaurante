@@ -1,6 +1,7 @@
 import uuid
 from datetime import datetime
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     Boolean,
@@ -20,6 +21,9 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
 from app.models.users import uuid_pk
+
+if TYPE_CHECKING:
+    from app.models.preparation import OrderItemPreparationTask
 
 
 class Order(Base):
@@ -132,3 +136,9 @@ class OrderItem(Base):
 
     command: Mapped[Command] = relationship(back_populates="items")
     order: Mapped[Order] = relationship(back_populates="items")
+    tasks: Mapped[list["OrderItemPreparationTask"]] = relationship(
+        back_populates="item",
+        lazy="selectin",
+        cascade="all, delete-orphan",
+        order_by="(OrderItemPreparationTask.sort_order, OrderItemPreparationTask.id)",
+    )

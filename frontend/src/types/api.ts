@@ -10,6 +10,8 @@ export type OrderStatus =
   | "CLOSED";
 export type ItemStatus = "PENDING" | "PREPARING" | "READY" | "DELIVERED" | "CANCELLED";
 export type PaymentMethod = "CASH" | "YAPE" | "PLIN" | "CARD" | "OTHER";
+export type TaskStatus = "PENDING" | "PREPARING" | "READY" | "CANCELLED";
+export type StepArea = "KITCHEN" | "GRILL";
 export type AvailabilityStatus = "AVAILABLE" | "SOLD_OUT";
 export type ShiftStatus = "OPEN" | "CLOSED";
 
@@ -44,6 +46,15 @@ export interface MenuCategory {
   is_active: boolean;
 }
 
+export interface PreparationStep {
+  id: string;
+  name: string;
+  area: StepArea;
+  expected_minutes: number | null;
+  sort_order: number;
+  is_active: boolean;
+}
+
 export interface MenuItem {
   id: string;
   category_id: string;
@@ -57,11 +68,24 @@ export interface MenuItem {
   is_active: boolean;
   image_url: string | null;
   availability_status: AvailabilityStatus;
+  preparation_steps: PreparationStep[];
 }
 
 export interface Menu {
   categories: MenuCategory[];
   items: MenuItem[];
+}
+
+export interface PreparationTask {
+  id: string;
+  name: string;
+  area: StepArea;
+  status: TaskStatus;
+  expected_minutes: number | null;
+  sort_order: number;
+  started_at: string | null;
+  ready_at: string | null;
+  cancelled_at: string | null;
 }
 
 export interface OrderItem {
@@ -86,6 +110,7 @@ export interface OrderItem {
   cancellation_reason: string | null;
   created_at: string;
   line_total?: string;
+  tasks: PreparationTask[];
 }
 
 export interface Command {
@@ -124,6 +149,26 @@ export interface Order extends OrderSummary {
   commands: Command[];
 }
 
+export interface BoardTask {
+  id: string;
+  order_item_id: string;
+  order_id: string;
+  command_id: string;
+  name: string;
+  item_name: string;
+  quantity: number;
+  notes: string | null;
+  replacement_description: string | null;
+  area: StepArea;
+  status: TaskStatus;
+  expected_minutes: number | null;
+  started_at: string | null;
+  ready_at: string | null;
+  created_at: string;
+  item_status: ItemStatus;
+  other_tasks: { id: string; name: string; area: StepArea; status: TaskStatus }[];
+}
+
 export interface ItemGroup {
   order_id: string;
   command_id: string;
@@ -136,7 +181,7 @@ export interface ItemGroup {
   command_notes: string | null;
   created_at: string;
   waiter_name: string | null;
-  items: OrderItem[];
+  tasks: BoardTask[];
   other_areas: Record<string, string>;
   order_general_status: string;
   elapsed_seconds: number;
@@ -277,6 +322,7 @@ export interface QueuedOperation {
     | "ADD_ORDER_ITEM"
     | "CANCEL_ORDER_ITEM"
     | "UPDATE_ORDER_ITEM_STATUS"
+    | "UPDATE_PREPARATION_TASK"
     | "REGISTER_EXPENSE";
   path: string;
   method: "POST" | "PATCH" | "DELETE";

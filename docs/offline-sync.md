@@ -11,7 +11,8 @@ al reconectar, la cola reintenta y el backend crea **exactamente un** recurso, n
 | `ADD_ORDER_ITEM` | `POST /api/v1/orders/{id}/items` | ✅ |
 | `CREATE_COMMAND` | `POST /api/v1/orders/{id}/commands` | ✅ |
 | `CANCEL_ORDER_ITEM` | `POST /api/v1/orders/{id}/items/{id}/cancel` | ✅ |
-| `UPDATE_ORDER_ITEM_STATUS` | `POST /api/v1/orders/{id}/items/{id}/status` | ✅ |
+| `UPDATE_ORDER_ITEM_STATUS` | `POST /api/v1/orders/{id}/items/{id}/status` | ✅ (entrega del plato; operaciones antiguas) |
+| `UPDATE_PREPARATION_TASK` | `POST /api/v1/orders/{id}/items/{id}/tasks/{task}/status` | ✅ |
 | `REGISTER_EXPENSE` | `POST /api/v1/expenses` | ✅ |
 | Pagos | `POST .../payments` | ❌ requieren conexión |
 | Login / refresco de token | `/api/v1/auth/*` | ❌ |

@@ -37,6 +37,15 @@ class ItemStatus(enum.StrEnum):
     CANCELLED = "CANCELLED"
 
 
+class TaskStatus(enum.StrEnum):
+    """Ciclo de una tarea interna de preparación (no es el estado comercial del plato)."""
+
+    PENDING = "PENDING"
+    PREPARING = "PREPARING"
+    READY = "READY"
+    CANCELLED = "CANCELLED"
+
+
 class AvailabilityStatus(enum.StrEnum):
     AVAILABLE = "AVAILABLE"
     SOLD_OUT = "SOLD_OUT"

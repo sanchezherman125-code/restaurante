@@ -32,6 +32,21 @@ from app.ws.hub import hub
 logger = logging.getLogger("app.http")
 
 
+def _backfill_preparation_tasks() -> None:
+    """Da su tarea equivalente a platos creados por una instancia anterior durante un despliegue."""
+    from app.db import SessionLocal
+    from app.services.preparation import backfill_missing_tasks
+
+    try:
+        with SessionLocal() as db:
+            created = backfill_missing_tasks(db)
+        if created:
+            logger.warning("Se crearon %s tareas de preparación faltantes", created)
+    except Exception:
+        # Antes de aplicar la migración 0007 la tabla no existe; el arranque no debe fallar por eso.
+        logger.exception("No se pudo completar el relleno de tareas de preparación")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     import asyncio
@@ -41,6 +56,7 @@ async def lifespan(app: FastAPI):
         from app.production import check_production
 
         await asyncio.to_thread(check_production)
+    await asyncio.to_thread(_backfill_preparation_tasks)
     yield
     hub.set_loop(None)
 

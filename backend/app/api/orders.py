@@ -16,8 +16,8 @@ from app.core.deps import (
 )
 from app.core.errors import ConflictError, ForbiddenError, NotFoundError, ValidationAppError
 from app.core.idempotency import execute_idempotent
-from app.models import Order, OrderItem, User
-from app.models.enums import ItemStatus, PreparationArea
+from app.models import Order, OrderItem, OrderItemPreparationTask, User
+from app.models.enums import ItemStatus
 from app.schemas.orders import (
     CommandCreate,
     CommandOut,
@@ -27,8 +27,10 @@ from app.schemas.orders import (
     OrderCreate,
     OrderItemOut,
     OrderOut,
+    TaskStatusRequest,
 )
 from app.services import orders as order_service
+from app.services import preparation as prep
 
 router = APIRouter(prefix="/orders", tags=["orders"])
 
@@ -41,10 +43,11 @@ def _serialize(order: Order) -> dict:
 
 def _mutation_response(user: User, order: Order) -> dict:
     if user.role in {"KITCHEN", "GRILL"}:
+        area = prep.ROLE_AREA[user.role]
         return {
             "id": str(order.id), "status": order.status,
             "items": [OrderItemOut.model_validate(item).model_dump(mode="json")
-                      for item in order.items if item.preparation_area == user.role],
+                      for item in order.items if area in prep.all_item_areas(item)],
         }
     return OrderOut.model_validate(order).model_dump(mode="json")
 
@@ -62,9 +65,7 @@ def _authorize_cancellation(user: User, order: Order, item: OrderItem) -> None:
         return
     if user.role == "WAITER" and order.created_by_waiter_id == user.id:
         return
-    if user.role == "KITCHEN" and item.preparation_area == PreparationArea.KITCHEN:
-        return
-    if user.role == "GRILL" and item.preparation_area == PreparationArea.GRILL:
+    if user.role in prep.ROLE_AREA and prep.ROLE_AREA[user.role] in prep.authorized_areas(item):
         return
     raise ForbiddenError("ITEM_CANCEL_FORBIDDEN", "No tiene permiso para cancelar este producto.")
 
@@ -292,6 +293,13 @@ def cancel_item(
     return JSONResponse(status_code=status, content=body)
 
 
+def _locked_item_operation(db, order: Order, item_id: UUID):
+    shift, locked_order = order_service.lock_order_and_shift(db, order.id, order.shift_id)
+    order_service.ensure_shift_open(shift)
+    item = order_service.lock_order_item(db, locked_order.id, item_id)
+    return locked_order, item
+
+
 @router.post("/{order_id}/items/{item_id}/status")
 def change_status(
     order_id: UUID,
@@ -302,34 +310,89 @@ def change_status(
     idem_key: IdempotencyKeyHeader = None,
     device_id: Annotated[str | None, Header(alias="X-Device-Id")] = None,
 ) -> JSONResponse:
+    """Estado a nivel de plato. Para áreas, PREPARING/READY actúa sobre las tareas de su propia área."""
     order = order_service.get_active_order(db, order_id)
     item = db.get(OrderItem, item_id)
     if item is None or item.order_id != order.id:
         raise NotFoundError("ITEM_NOT_FOUND", "Producto no encontrado en este pedido.")
+    if user.role == "WAITER":
+        _authorize_order_read(user, order)
+    _authorize_status_change(user, item, payload.status)
 
     key = payload.client_operation_id or idem_key
 
     def operation() -> tuple[int, dict]:
-        ensure_order_in_open_shift(db, order.shift_id)
-        if user.role == "WAITER":
-            _authorize_order_read(user, order)
-        _authorize_status_change(user, item, payload.status)
-        before = {"status": item.status}
-        order_service.change_item_status(db, user, item, payload.status)
-        audit_actions.audit(
-            db,
-            user_id=user.id,
-            action=audit_actions.ITEM_STATUS_CHANGED,
-            entity_type="order_items",
-            entity_id=item.id,
-            before_data=before,
-            after_data={"status": item.status},
-            device_id=device_id,
-        )
-        return 200, _mutation_response(user, order)
+        locked_order, locked_item = _locked_item_operation(db, order, item_id)
+        before = {"status": locked_item.status}
+        if order_service.change_item_status(db, user, locked_item, payload.status):
+            audit_actions.audit(
+                db,
+                user_id=user.id,
+                action=audit_actions.ITEM_STATUS_CHANGED,
+                entity_type="order_items",
+                entity_id=locked_item.id,
+                before_data=before,
+                after_data={"status": locked_item.status, "requested": payload.status.value},
+                device_id=device_id,
+            )
+        return 200, _mutation_response(user, locked_order)
 
     status, body = execute_idempotent(db, key, user.id, "UPDATE_ORDER_ITEM_STATUS", operation, scope=str(item.id))
     return JSONResponse(status_code=status, content=body)
+
+
+@router.post("/{order_id}/items/{item_id}/tasks/{task_id}/status")
+def change_task_status(
+    order_id: UUID,
+    item_id: UUID,
+    task_id: UUID,
+    payload: TaskStatusRequest,
+    db: DbSession,
+    user: CurrentUser,
+    idem_key: IdempotencyKeyHeader = None,
+    device_id: Annotated[str | None, Header(alias="X-Device-Id")] = None,
+) -> JSONResponse:
+    """Avanza una tarea de preparación. Cada área solo modifica las tareas de su área."""
+    order = order_service.get_active_order(db, order_id)
+    item = db.get(OrderItem, item_id)
+    task = db.get(OrderItemPreparationTask, task_id)
+    if item is None or item.order_id != order.id or task is None or task.order_item_id != item.id:
+        raise NotFoundError("TASK_NOT_FOUND", "Tarea no encontrada en este producto.")
+    _authorize_task_change(user, task)
+
+    key = payload.client_operation_id or idem_key
+
+    def operation() -> tuple[int, dict]:
+        locked_order, locked_item = _locked_item_operation(db, order, item_id)
+        prep.lock_item_tasks(db, locked_item.id)
+        locked_task = next((t for t in locked_item.tasks if t.id == task_id), None)
+        if locked_task is None:
+            raise NotFoundError("TASK_NOT_FOUND", "Tarea no encontrada en este producto.")
+        before = {"task_status": locked_task.status, "item_status": locked_item.status}
+        changed = order_service.change_task_statuses(db, locked_item, [locked_task], payload.status)
+        if changed:
+            audit_actions.audit(
+                db,
+                user_id=user.id,
+                action=audit_actions.TASK_STATUS_CHANGED,
+                entity_type="order_item_preparation_tasks",
+                entity_id=locked_task.id,
+                before_data=before,
+                after_data={"task_status": locked_task.status, "item_status": locked_item.status},
+                device_id=device_id,
+            )
+        return 200, _mutation_response(user, locked_order)
+
+    status, body = execute_idempotent(db, key, user.id, "UPDATE_PREPARATION_TASK", operation, scope=str(task_id))
+    return JSONResponse(status_code=status, content=body)
+
+
+def _authorize_task_change(user: User, task: OrderItemPreparationTask) -> None:
+    if user.role == "ADMIN":
+        return
+    if prep.ROLE_AREA.get(user.role) == task.area:
+        return
+    raise ForbiddenError("TASK_STATUS_FORBIDDEN", f"Esta tarea pertenece al área {task.area}.")
 
 
 def _authorize_status_change(user: User, item: OrderItem, new_status: ItemStatus) -> None:
@@ -339,18 +402,16 @@ def _authorize_status_change(user: User, item: OrderItem, new_status: ItemStatus
         if user.role == "WAITER" and new_status == ItemStatus.DELIVERED:
             return
         raise ForbiddenError("ITEM_STATUS_FORBIDDEN", "Solo un mesero entrega productos directos.")
-    area_role = {
-        PreparationArea.KITCHEN: "KITCHEN",
-        PreparationArea.GRILL: "GRILL",
-    }[PreparationArea(item.preparation_area)]
+    areas = prep.authorized_areas(item)
+    own_area = prep.ROLE_AREA.get(user.role)
 
     if new_status == ItemStatus.DELIVERED:
-        if user.role in (area_role, "WAITER"):
+        if user.role == "WAITER" or own_area in areas:
             return
         raise ForbiddenError("ITEM_DELIVERY_FORBIDDEN", "Solo meseros o el área pueden marcar entrega.")
-    if user.role == area_role:
+    if own_area in areas:
         return
     raise ForbiddenError(
         "ITEM_STATUS_FORBIDDEN",
-        f"Este producto pertenece al área {item.preparation_area}.",
+        f"Este producto pertenece al área {', '.join(sorted(areas)) or item.preparation_area}.",
     )

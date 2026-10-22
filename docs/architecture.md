@@ -44,11 +44,13 @@ mensaje de bienvenida (`connection.ready`).
   numeración secuencial (`sequence_number`) y opcionalmente un `client_operation_id` idempotente.
 - **Ítem (`order_items`)**: un producto concreto con su estado:
   `PENDING → PREPARING → READY → DELIVERED` (+ `CANCELLED`).
-- Cada ítem tiene `preparation_area`: `KITCHEN`, `GRILL` o `WAITER`.
-  Los ítems de mesero **no** pasan por preparación: de `PENDING` solo pueden ir a `DELIVERED` o `CANCELLED`.
+- Un ítem con preparación tiene **una o varias tareas** (`order_item_preparation_tasks`), cada una
+  con su área (`KITCHEN`/`GRILL`), tiempo y estado; el ítem es lo único que se cobra. Los ítems de
+  entrega directa **no** tienen tareas: de `PENDING` solo pueden ir a `DELIVERED` o `CANCELLED`.
+  Ver [PREPARACION_MULTIAREA_Y_COBROS.md](PREPARACION_MULTIAREA_Y_COBROS.md).
 
-Regla de "listo": el pedido pasa a `READY` cuando **todos** sus ítems no cancelados de área
-`KITCHEN`/`GRILL` están en `READY` o `DELIVERED`. En ese momento el backend emite `order.ready`
+Regla de "listo": un plato pasa a `READY` solo cuando **todas** sus tareas están `READY`; el pedido
+pasa a `READY` cuando **todos** sus ítems no cancelados con preparación están en `READY` o `DELIVERED`. En ese momento el backend emite `order.ready`
 a los canales `waiters` y `admin`.
 
 ## 5. Flujo de un pedido
@@ -59,7 +61,7 @@ MESERO                BACKEND                  COCINA/PARRILLA           MESERO 
   │─────────────────────►│  order.created ───────────┼─────────────────────────►│
   │  POST /orders/{id}/commands                       │                          │
   │─────────────────────►│  command.created ────────►│                          │
-  │                      │                           │ PATCH .../status         │
+  │                      │                           │ POST .../tasks/{id}/status│
   │                      │◄──────────────────────────│  PREPARING               │
   │                      │  order_item.updated ──────┼─────────────────────────►│
   │                      │◄──────────────────────────│  READY                   │

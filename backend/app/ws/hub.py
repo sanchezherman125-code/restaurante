@@ -63,7 +63,8 @@ class ConnectionHub:
                 loop.call_soon_threadsafe(self._dispatch, conn, message)
             except RuntimeError:
                 logger.debug("Loop cerrado; se descarta mensaje WebSocket")
-        if event not in PUSH_EVENTS:
+        # ``silent`` marca eventos que solo actualizan pantallas: otro evento de la misma finalización ya avisa.
+        if event not in PUSH_EVENTS or payload.get("silent"):
             return
         loop = self._loop
         if loop is not None and not loop.is_closed():

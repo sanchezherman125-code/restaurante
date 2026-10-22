@@ -34,6 +34,20 @@ La suscripción expone un endpoint que actúa como capacidad para enviar mensaje
 como dato sensible. El endpoint de consulta de clave VAPID pública no entrega la clave
 privada.
 
+## Platos con varias áreas
+
+- `command.created` llega solo a las áreas que tienen tareas en la comanda (más waiters/admin).
+- Cuando una tarea cambia se emite `preparation_task.updated` (solo WebSocket, nunca Push) a las áreas
+  que participan; la otra área puede mostrar «Cocina terminó — Alitas con papas» mientras el plato
+  siga incompleto. Nunca se anuncia un plato como listo por una tarea.
+- `order_item.ready` (y su Push) se emite **una sola vez por plato**, al cruzar a `READY` dentro de la
+  transacción que bloquea el plato; solo lo reciben el mesero dueño del pedido y el admin. El mismo `id`
+  de evento viaja por WebSocket y Push para que el cliente no lo duplique.
+- Si esa misma finalización completa el pedido (p. ej. pedido de un solo plato), `order_item.ready` se emite con
+  `silent: true` junto a `order.ready`: sirve para refrescar pantallas, pero el hub no programa Push para él y el
+  cliente no muestra toast ni sonido. El mesero recibe un único aviso visible/Push (`order.ready`).
+- El payload Push sigue siendo genérico (sin plato, mesa ni importes).
+
 ## Configuración de producción
 
 En Render, definir como secretos/variables de entorno del backend:

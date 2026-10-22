@@ -14,19 +14,28 @@ interface ModalProps {
 export function Modal({ title, eyebrow, icon, className, onClose, children, footer }: ModalProps) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const titleId = useId();
+  // Los padres suelen pasar una función nueva en cada render; el foco inicial y el listener
+  // deben configurarse una sola vez o el diálogo roba el foco al campo que se está escribiendo.
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  });
 
   useEffect(() => {
     const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape") onCloseRef.current();
     };
     document.addEventListener("keydown", onKeyDown);
-    requestAnimationFrame(() => dialogRef.current?.focus());
+    const frame = requestAnimationFrame(() => {
+      if (!dialogRef.current?.contains(document.activeElement)) dialogRef.current?.focus();
+    });
     return () => {
+      cancelAnimationFrame(frame);
       document.removeEventListener("keydown", onKeyDown);
       previouslyFocused?.focus();
     };
-  }, [onClose]);
+  }, []);
 
   return (
     <div

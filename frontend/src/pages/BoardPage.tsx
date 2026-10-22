@@ -5,58 +5,83 @@ import { ConfirmDialog, Modal } from "../components/Modal";
 import { EmptyState, Spinner } from "../components/Layout";
 import { formatElapsed, useElapsed, useLateItems } from "../hooks/useElapsed";
 import { errorMessage, sendOrQueue } from "../lib/send";
-import type { ItemGroup, MenuItem, OrderItem } from "../types/api";
+import type { BoardTask, ItemGroup, MenuItem } from "../types/api";
 import { useSession } from "../stores/session";
 import { useUi } from "../stores/ui";
 
 const AREA_LABEL: Record<string, string> = { KITCHEN: "Cocina", GRILL: "Parrilla" };
+const AREA_SUMMARY: Record<string, string> = { PENDING: "pendiente", PREPARING: "preparando", READY: "listo", EMPTY: "sin tareas" };
 
-function ItemLine({
-  item,
-  groupId,
+const TASK_LABEL: Record<string, string> = {
+  PENDING: "pendiente",
+  PREPARING: "preparando",
+  READY: "listo",
+  CANCELLED: "cancelado",
+};
+
+function TaskLine({
+  task,
   updating,
   onStatus,
   onCancel,
 }: {
-  item: OrderItem;
-  groupId: string;
+  task: BoardTask;
   updating: boolean;
-  onStatus: (item: OrderItem, status: string) => void;
-  onCancel: (item: OrderItem) => void;
+  onStatus: (task: BoardTask, status: string) => void;
+  onCancel: (task: BoardTask) => void;
 }) {
-  const elapsed = useElapsed(item.preparation_started_at ?? item.created_at);
-  const expected = (item.expected_prep_minutes_snapshot ?? 0) * 60;
-  const late = expected > 0 && elapsed > expected && (item.status === "PENDING" || item.status === "PREPARING");
-  const warn = expected > 0 && elapsed > expected * 0.8 && !late && item.status !== "DELIVERED";
+  const elapsed = useElapsed(task.started_at ?? task.created_at);
+  const expected = (task.expected_minutes ?? 0) * 60;
+  const open = task.status === "PENDING" || task.status === "PREPARING";
+  const late = expected > 0 && elapsed > expected && open;
+  const warn = expected > 0 && elapsed > expected * 0.8 && !late && open;
+  const waitingFor = task.status === "READY" && task.item_status !== "READY" && task.item_status !== "DELIVERED"
+    ? task.other_tasks.filter((other) => other.status !== "READY")
+    : [];
 
   return (
-    <div className="item-row" key={`${groupId}-${item.id}`}>
-      <span className="qty">×{item.quantity}</span>
+    <div className="item-row" data-testid="prep-task" data-task={task.name}>
+      <span className="qty">×{task.quantity}</span>
       <div className="name">
-        <div style={{ fontWeight: 700 }}>{item.menu_item_name_snapshot}</div>
-        {item.notes ? <div className="hint">📝 {item.notes}</div> : null}
-        {item.replacement_description ? <div className="hint">🔁 {item.replacement_description}</div> : null}
+        <div style={{ fontWeight: 700 }}>{task.name}</div>
+        {task.item_name !== task.name ? <div className="hint">{task.item_name}</div> : null}
+        {task.notes ? <div className="hint">📝 {task.notes}</div> : null}
+        {task.replacement_description ? <div className="hint">🔁 {task.replacement_description}</div> : null}
         <div className="row wrap" style={{ marginTop: 6 }}>
           <span className={`timer ${late ? "late" : warn ? "warn" : ""}`}>{formatElapsed(elapsed)}</span>
-          {expected > 0 ? <span className="hint">/ {item.expected_prep_minutes_snapshot} min</span> : null}
-          <span className={`chip ${item.status === "PREPARING" ? "info" : item.status === "READY" ? "success" : "warning"}`}>
-            {item.status === "PENDING" ? "pendiente" : item.status === "PREPARING" ? "preparando" : item.status === "READY" ? "listo" : item.status}
+          {expected > 0 ? <span className="hint">/ {task.expected_minutes} min</span> : null}
+          <span className={`chip ${task.status === "PREPARING" ? "info" : task.status === "READY" ? "success" : "warning"}`}>
+            {TASK_LABEL[task.status] ?? task.status}
           </span>
         </div>
+        {task.other_tasks.length > 0 ? (
+          <div className="row wrap" style={{ marginTop: 6 }}>
+            {task.other_tasks.map((other) => (
+              <span key={other.id} className={`chip ${other.status === "READY" ? "success" : ""}`}>
+                {AREA_LABEL[other.area] ?? other.area}: {TASK_LABEL[other.status] ?? other.status}
+              </span>
+            ))}
+          </div>
+        ) : null}
+        {waitingFor.length > 0 ? (
+          <div className="hint" style={{ marginTop: 4 }}>
+            Esperando a {[...new Set(waitingFor.map((other) => AREA_LABEL[other.area] ?? other.area))].join(" y ")}
+          </div>
+        ) : null}
         <div className="row wrap" style={{ marginTop: 8 }}>
-          {item.status === "PENDING" ? (
-            <button className="btn small" disabled={updating} onClick={() => onStatus(item, "PREPARING")}>
+          {task.status === "PENDING" ? (
+            <button className="btn small" disabled={updating} onClick={() => onStatus(task, "PREPARING")}>
               ▶ Empezar
             </button>
           ) : null}
-          {item.status === "PREPARING" ? (
-            <button className="btn success small" disabled={updating} onClick={() => onStatus(item, "READY")}>
+          {task.status === "PREPARING" ? (
+            <button className="btn success small" disabled={updating} onClick={() => onStatus(task, "READY")}>
               ✓ Listo
             </button>
           ) : null}
-          {item.status === "PENDING" || item.status === "PREPARING" ? (
-            <button className="btn ghost small" disabled={updating} onClick={() => onCancel(item)}>
-              Cancelar
+          {task.item_status === "PENDING" || task.item_status === "PREPARING" ? (
+            <button className="btn ghost small" disabled={updating} onClick={() => onCancel(task)}>
+              Cancelar plato
             </button>
           ) : null}
         </div>
@@ -68,9 +93,9 @@ function ItemLine({
 function Board({ area }: { area: string }) {
   const queryClient = useQueryClient();
   const toast = useUi((state) => state.toast);
-  const [cancelTarget, setCancelTarget] = useState<OrderItem | null>(null);
+  const [cancelTarget, setCancelTarget] = useState<BoardTask | null>(null);
   const [soldOutOpen, setSoldOutOpen] = useState(false);
-  const [updatingItems, setUpdatingItems] = useState<Record<string, string>>({});
+  const [updatingTasks, setUpdatingTasks] = useState<Record<string, string>>({});
 
   const key = area === "GRILL" ? "grill" : "kitchen";
   const groups = useQuery({
@@ -80,20 +105,21 @@ function Board({ area }: { area: string }) {
     retry: false,
   });
 
-  async function changeStatus(item: OrderItem, status: string) {
-    if (updatingItems[item.id] && updatingItems[item.id] !== item.status) return;
-    setUpdatingItems((current) => ({ ...current, [item.id]: status }));
+  async function changeStatus(task: BoardTask, status: string) {
+    if (updatingTasks[task.id] && updatingTasks[task.id] !== task.status) return;
+    setUpdatingTasks((current) => ({ ...current, [task.id]: status }));
     let queued = false;
     let completed = false;
     try {
       const outcome = await sendOrQueue(
         {
-          operation_type: "UPDATE_ORDER_ITEM_STATUS",
-          path: `/api/v1/orders/${item.order_id}/items/${item.id}/status`,
+          operation_type: "UPDATE_PREPARATION_TASK",
+          path: `/api/v1/orders/${task.order_id}/items/${task.order_item_id}/tasks/${task.id}/status`,
           method: "POST",
           body: { status },
         },
-        (clientOperationId) => ordersApi.setItemStatus(item.order_id, item.id, status, clientOperationId),
+        (clientOperationId) =>
+          preparationApi.setTaskStatus(task.order_id, task.order_item_id, task.id, status, clientOperationId),
       );
       queued = outcome.queued;
       completed = true;
@@ -102,25 +128,26 @@ function Board({ area }: { area: string }) {
       toast("error", "No se pudo actualizar", errorMessage(error));
     } finally {
       if (!queued && !completed) {
-        setUpdatingItems((current) => {
+        setUpdatingTasks((current) => {
           const next = { ...current };
-          delete next[item.id];
+          delete next[task.id];
           return next;
         });
       }
     }
   }
 
-  async function cancelItem(item: OrderItem) {
+  async function cancelDish(task: BoardTask) {
     try {
       const outcome = await sendOrQueue(
         {
           operation_type: "CANCEL_ORDER_ITEM",
-          path: `/api/v1/orders/${item.order_id}/items/${item.id}/cancel`,
+          path: `/api/v1/orders/${task.order_id}/items/${task.order_item_id}/cancel`,
           method: "POST",
           body: { reason: `Cancelado en ${AREA_LABEL[area]}` },
         },
-        (operationId) => ordersApi.cancelItem(item.order_id, item.id, `Cancelado en ${AREA_LABEL[area]}`, operationId),
+        (operationId) =>
+          ordersApi.cancelItem(task.order_id, task.order_item_id, `Cancelado en ${AREA_LABEL[area]}`, operationId),
       );
       if (!outcome.queued) void queryClient.invalidateQueries({ queryKey: ["preparation"] });
       toast("info", "Producto cancelado");
@@ -157,9 +184,9 @@ function Board({ area }: { area: string }) {
             <GroupCard
               key={group.command_id}
               group={group}
-              onStatus={(item, status) => void changeStatus(item, status)}
-              onCancel={(item) => setCancelTarget(item)}
-              updatingItems={updatingItems}
+              onStatus={(task, status) => void changeStatus(task, status)}
+              onCancel={(task) => setCancelTarget(task)}
+              updatingTasks={updatingTasks}
             />
           ))}
         </div>
@@ -167,11 +194,13 @@ function Board({ area }: { area: string }) {
 
       {cancelTarget ? (
         <ConfirmDialog
-          title="Cancelar producto"
-          message={`¿Cancelar ${cancelTarget.quantity} × ${cancelTarget.menu_item_name_snapshot}? Quedará registrado en auditoría (se notifica al mesero).`}
-          confirmLabel="Cancelar"
+          title="Cancelar plato"
+          message={`¿Cancelar ${cancelTarget.quantity} × ${cancelTarget.item_name}? Se cancela el plato completo${
+            cancelTarget.other_tasks.length > 0 ? ", también en las otras áreas que participan," : ""
+          } y se avisa al mesero. Queda registrado en auditoría.`}
+          confirmLabel="Cancelar plato"
           danger
-          onConfirm={() => void cancelItem(cancelTarget)}
+          onConfirm={() => void cancelDish(cancelTarget)}
           onCancel={() => setCancelTarget(null)}
         />
       ) : null}
@@ -185,30 +214,28 @@ function GroupCard({
   group,
   onStatus,
   onCancel,
-  updatingItems,
+  updatingTasks,
 }: {
   group: ItemGroup;
-  onStatus: (item: OrderItem, status: string) => void;
-  onCancel: (item: OrderItem) => void;
-  updatingItems: Record<string, string>;
+  onStatus: (task: BoardTask, status: string) => void;
+  onCancel: (task: BoardTask) => void;
+  updatingTasks: Record<string, string>;
 }) {
   const elapsed = useElapsed(group.created_at);
   const latenessInput = useMemo(
     () =>
-      group.items.map((item) => ({
-        id: item.id,
-        expectedMinutes: item.expected_prep_minutes_snapshot,
-        startedAt: item.preparation_started_at,
-        createdAt: item.created_at,
-        status: item.status,
+      group.tasks.map((task) => ({
+        id: task.id,
+        expectedMinutes: task.expected_minutes,
+        startedAt: task.started_at,
+        createdAt: task.created_at,
+        status: task.status,
       })),
-    [group.items],
+    [group.tasks],
   );
   const lateIds = useLateItems(latenessInput);
   const anyLate = lateIds.size > 0;
-  const allReady = group.items.every(
-    (item) => item.status === "READY" || item.status === "DELIVERED" || item.status === "CANCELLED",
-  );
+  const allReady = group.tasks.every((task) => task.status === "READY" || task.status === "CANCELLED");
 
   return (
     <div className="ticket-card" data-testid="prep-card" data-table={group.table_name ?? ""} style={{ margin: 0 }}>
@@ -224,18 +251,17 @@ function GroupCard({
           <span className={`chip ${allReady ? "success" : "info"}`}>{allReady ? "lista" : "en curso"}</span>
           {Object.entries(group.other_areas ?? {}).map(([areaName, status]) => (
             <span key={areaName} className="chip">
-              {AREA_LABEL[areaName] ?? areaName}: {status}
+              {AREA_LABEL[areaName] ?? areaName}: {AREA_SUMMARY[status] ?? status}
             </span>
           ))}
         </div>
         {group.notes ? <div className="hint">🗒️ {group.notes}</div> : null}
         {group.command_notes ? <div className="hint">📝 {group.command_notes}</div> : null}
-        {group.items.map((item) => (
-          <ItemLine
-            key={item.id}
-            item={item}
-            groupId={group.command_id}
-            updating={Boolean(updatingItems[item.id] && updatingItems[item.id] !== item.status)}
+        {group.tasks.map((task) => (
+          <TaskLine
+            key={task.id}
+            task={task}
+            updating={Boolean(updatingTasks[task.id] && updatingTasks[task.id] !== task.status)}
             onStatus={onStatus}
             onCancel={onCancel}
           />
@@ -265,7 +291,13 @@ function SoldOutModal({ area, onClose }: { area: string; onClose: () => void }) 
     }
   }
 
-  const items = (menu.data?.items ?? []).filter((item) => item.preparation_area === area && item.is_active);
+  const items = (menu.data?.items ?? []).filter(
+    (item) =>
+      item.is_active &&
+      (item.preparation_steps?.length
+        ? item.preparation_steps.some((step) => step.is_active && step.area === area)
+        : item.preparation_area === area),
+  );
 
   return (
     <Modal title="Marcar productos agotados" onClose={onClose}>

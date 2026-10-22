@@ -19,7 +19,7 @@ EVENTS: dict[str, tuple[str, str, str, set[str]]] = {
         "Nueva comanda", "Hay una nueva comanda en tu área.", "/comandas", {"KITCHEN", "GRILL", "ADMIN"}
     ),
     "order_item.ready": (
-        "Preparación terminada", "Un producto está listo.", "/comandas", {"KITCHEN", "GRILL", "ADMIN", "WAITER"}
+        "Preparación terminada", "Un producto está listo.", "/comandas", {"ADMIN", "WAITER"}
     ),
     "order.ready": ("Pedido listo", "Un pedido está listo para entregar.", "/pedidos", {"WAITER", "ADMIN"}),
     "order.paid": ("Pago registrado", "Se registró el pago de un pedido.", "/mesas", {"WAITER", "ADMIN"}),
@@ -63,12 +63,8 @@ def notification_for(event: str, data: dict[str, Any]) -> tuple[dict[str, str], 
         if "GRILL" in areas:
             roles.add("GRILL")
     elif event == "order_item.ready":
+        # Solo se emite cuando todas las tareas del plato terminaron: el aviso es para quien lo entrega.
         roles = {"ADMIN", "WAITER"}
-        area = data.get("preparation_area")
-        if area == "KITCHEN":
-            roles.add("GRILL")
-        elif area == "GRILL":
-            roles.add("KITCHEN")
     return {"title": title, "body": body, "route": route}, roles
 
 

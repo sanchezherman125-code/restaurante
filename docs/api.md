@@ -71,7 +71,8 @@ Roles: `Staff` = cualquier usuario autenticado; `Admin`; `Waiter`; `Kitchen`; `G
 | POST | `/api/v1/orders/{order_id}/items` | Waiter/Admin | — |
 | PATCH | `/api/v1/orders/{order_id}/items/{item_id}` | Waiter/Admin | — |
 | POST | `/api/v1/orders/{order_id}/items/{item_id}/cancel` | Waiter/Admin | — |
-| POST | `/api/v1/orders/{order_id}/items/{item_id}/status` | según área | — |
+| POST | `/api/v1/orders/{order_id}/items/{item_id}/status` | según área | `client_operation_id` o header |
+| POST | `/api/v1/orders/{order_id}/items/{item_id}/tasks/{task_id}/status` | Área de la tarea / Admin | `client_operation_id` o header |
 | GET | `/api/v1/orders/{order_id}/billing` | Waiter dueño / Admin | — |
 | GET/POST | `/api/v1/orders/{order_id}/payments` | Waiter dueño / Admin | `client_operation_id` (body) |
 | POST | `/api/v1/orders/{order_id}/splits` | — | **retirado: responde 410 `SPLITS_DISABLED`** |
@@ -80,6 +81,22 @@ Roles: `Staff` = cualquier usuario autenticado; `Admin`; `Waiter`; `Kitchen`; `G
 `SPLIT_PAYMENTS_DISABLED`; el monto nunca puede superar el saldo pendiente (422
 `PAYMENT_EXCEEDS_PENDING`). `GET .../billing` devuelve ítems (sin `split_quantity`), totales,
 `pending_amount`, `payments` y `legacy_splits` (solo lectura, divisiones creadas antes del retiro).
+
+**Tareas de preparación.** Cada plato con preparación trae `tasks[]` (`id`, `name`, `area`,
+`status` `PENDING|PREPARING|READY|CANCELLED`, `expected_minutes`, `started_at`, `ready_at`). El
+endpoint de tarea acepta `PREPARING` o `READY` y solo avanza: repetir o retrasar un estado es una
+operación nula (200 sin eventos), saltarse un paso es 409 `INVALID_STATUS_TRANSITION`. El estado
+del plato se deriva: `PREPARING` al iniciar la primera tarea y `READY` cuando **todas** terminan.
+`POST .../items/{id}/status` se conserva por compatibilidad (colas offline antiguas): `PREPARING`/`READY`
+actúan sobre las tareas **del área del usuario** (Admin: todas) y `DELIVERED` es del plato.
+Cancelar (`.../cancel`) cancela el plato y todas sus tareas.
+
+**Catálogo.** `POST/PATCH /menu/items` aceptan `preparation_steps: [{id?, name, area, expected_minutes, is_active}]`
+(1–12 tareas, áreas `KITCHEN|GRILL`, 0–600 min; el orden de la lista es el orden de visualización).
+`PATCH` con la lista reemplaza la receta conservando el `id` de las tareas editadas. Sin la lista, un
+cambio de `preparation_area`/`expected_prep_minutes` solo se admite si el producto tiene una tarea
+(si tiene varias: 422 `PREPARATION_STEPS_REQUIRED`). `preparation_area` y `expected_prep_minutes` del
+producto son un resumen derivado (área de la primera tarea activa y tiempo de la más larga).
 
 Transiciones de ítem permitidas (§9): `PENDING→PREPARING|READY|DELIVERED|CANCELLED`,
 `PREPARING→READY|CANCELLED`, `READY→DELIVERED`. El endpoint de cambio de estado rechaza
@@ -92,7 +109,11 @@ Transiciones de ítem permitidas (§9): `PENDING→PREPARING|READY|DELIVERED|CAN
 | GET | `/api/v1/preparation/kitchen` | Kitchen/Admin |
 | GET | `/api/v1/preparation/grill` | Grill/Admin |
 
-Agrupan ítems por mesa/pedido, con `summary` y tiempos de preparación.
+Agrupan por comanda. `tasks[]` contiene **solo las tareas del área** (con `item_name`, `quantity`,
+`other_tasks[]` = progreso de las demás áreas del mismo plato); `other_areas` resume el estado de la
+otra área en la comanda. El filtro es por estado de tarea/plato, no del pedido: un pedido `PAID` con
+preparación pendiente sigue visible (se excluye solo `CLOSED`). `items[]` es obsoleto y se conserva
+para clientes en caché.
 
 ### Gastos y lista de compras (§54, §55)
 
@@ -170,9 +191,10 @@ Canales (asignados por el servidor según el rol): `waiters`, `kitchen`, `grill`
 | `availability.changed` | todos | `name`, `status` |
 | `order.created` | waiters, admin | pedido |
 | `order.updated` | waiters, admin | pedido |
-| `command.created` | kitchen, grill, waiters, admin | `order_id`, `sequence_number`, resumen |
-| `order_item.updated` | admin + área del ítem | ítem |
-| `order_item.ready` | waiters, kitchen, grill, admin | ítem |
+| `command.created` | admin, waiters + **solo las áreas con tareas** | `order_id`, `sequence_number`, `areas` |
+| `order_item.updated` | admin, waiters (dueño) + áreas con tareas | ítem |
+| `preparation_task.updated` | admin + áreas con tareas (no push) | ítem + `task_area`, `task_status` |
+| `order_item.ready` | waiters (dueño), admin — **una vez por plato**; `silent: true` si `order.ready` avisa lo mismo | ítem |
 | `order.ready` | waiters, admin | `order_id`, `table_name`, `table_number`, `message` |
 | `order.paid` | waiters, admin | `order_id`, `paid_amount` |
 | `purchase_list.changed` | kitchen, grill, admin | — |

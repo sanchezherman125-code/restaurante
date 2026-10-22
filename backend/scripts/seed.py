@@ -8,7 +8,7 @@ from decimal import Decimal
 from app.config import settings
 from app.core.security import hash_pin
 from app.db import SessionLocal
-from app.models import MenuCategory, MenuItem, RestaurantTable, User
+from app.models import MenuCategory, MenuItem, MenuPreparationStep, RestaurantTable, User
 
 USERS = [
     ("admin", "1234", "Dueño", "ADMIN"),
@@ -71,17 +71,35 @@ def run() -> None:
             db.add(category)
             db.flush()
             for name, price, area, minutes in items:
-                db.add(
-                    MenuItem(
-                        category_id=category.id,
-                        name=name,
-                        description=None,
-                        price=Decimal(price),
-                        preparation_area=area,
-                        requires_preparation=area is not None,
-                        expected_prep_minutes=minutes,
-                    )
+                menu_item = MenuItem(
+                    category_id=category.id,
+                    name=name,
+                    description=None,
+                    price=Decimal(price),
+                    preparation_area=area,
+                    requires_preparation=area is not None,
+                    expected_prep_minutes=minutes,
                 )
+                db.add(menu_item)
+                db.flush()
+                if area is not None:
+                    db.add(MenuPreparationStep(
+                        menu_item_id=menu_item.id, name=name, area=area, expected_minutes=minutes, sort_order=0,
+                    ))
+            if category_name == "Fondos":
+                # Un único plato, un único precio, preparado en dos áreas en paralelo.
+                shared = MenuItem(
+                    category_id=category.id, name="Alitas con papas", price=Decimal("25.00"),
+                    preparation_area="GRILL", requires_preparation=True, expected_prep_minutes=12,
+                )
+                db.add(shared)
+                db.flush()
+                db.add_all([
+                    MenuPreparationStep(menu_item_id=shared.id, name="Preparar alitas", area="GRILL",
+                                        expected_minutes=12, sort_order=0),
+                    MenuPreparationStep(menu_item_id=shared.id, name="Preparar papas", area="KITCHEN",
+                                        expected_minutes=7, sort_order=1),
+                ])
 
         db.commit()
         print("Datos iniciales creados:")

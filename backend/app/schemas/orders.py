@@ -4,7 +4,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.models.enums import ItemStatus, OrderStatus, OrderType, PreparationArea
+from app.models.enums import ItemStatus, OrderStatus, OrderType, PreparationArea, TaskStatus
 
 
 class OrderCreate(BaseModel):
@@ -60,6 +60,33 @@ class ItemStatusRequest(BaseModel):
     client_operation_id: UUID | None = None
 
 
+class PreparationTaskOut(BaseModel):
+    """Tarea interna de un plato. Nunca tiene precio: el cobro vive solo en el plato."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    name: str
+    area: PreparationArea
+    status: TaskStatus
+    expected_minutes: int | None
+    sort_order: int
+    started_at: datetime | None
+    ready_at: datetime | None
+    cancelled_at: datetime | None
+
+
+class TaskStatusRequest(BaseModel):
+    status: TaskStatus
+    client_operation_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def only_forward_states(self) -> "TaskStatusRequest":
+        if self.status not in (TaskStatus.PREPARING, TaskStatus.READY):
+            raise ValueError("Una tarea solo puede pasar a PREPARING o READY; use la cancelación del producto.")
+        return self
+
+
 class OrderItemOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -83,6 +110,7 @@ class OrderItemOut(BaseModel):
     cancelled_after_preparation_started: bool
     cancellation_reason: str | None
     created_at: datetime
+    tasks: list[PreparationTaskOut] = []
 
     @property
     def line_total(self) -> Decimal:
@@ -129,8 +157,37 @@ class OrderOut(OrderSummaryOut):
     commands: list[CommandOut] = []
 
 
+class SiblingTaskOut(BaseModel):
+    id: UUID
+    name: str
+    area: PreparationArea
+    status: TaskStatus
+
+
+class BoardTaskOut(BaseModel):
+    """Tarea del área mostrada en el tablero, con el contexto del plato al que pertenece."""
+
+    id: UUID
+    order_item_id: UUID
+    order_id: UUID
+    command_id: UUID
+    name: str
+    item_name: str
+    quantity: int
+    notes: str | None
+    replacement_description: str | None
+    area: PreparationArea
+    status: TaskStatus
+    expected_minutes: int | None
+    started_at: datetime | None
+    ready_at: datetime | None
+    created_at: datetime
+    item_status: ItemStatus
+    other_tasks: list[SiblingTaskOut] = []
+
+
 class ItemGroupOut(BaseModel):
-    """Vista de preparación: comanda con los items del área."""
+    """Vista de preparación: comanda con las tareas del área."""
 
     order_id: UUID
     command_id: UUID
@@ -143,7 +200,8 @@ class ItemGroupOut(BaseModel):
     command_notes: str | None
     created_at: datetime
     waiter_name: str | None
-    items: list[OrderItemOut]
+    tasks: list[BoardTaskOut]
+    items: list[OrderItemOut]  # Obsoleto: platos con tareas en el área; se conserva para clientes en caché.
     other_areas: dict[str, str] = {}
     order_general_status: str = ""
     elapsed_seconds: int = 0

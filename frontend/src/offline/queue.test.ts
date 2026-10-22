@@ -193,4 +193,69 @@ describe("cola offline", () => {
     expect((init.headers as Record<string, string>)["Idempotency-Key"]).toBe(op.client_operation_id);
     expect((await listOperations())[0].status).toBe("SYNCED");
   });
+
+  describe("tareas de preparación en un plato compartido", () => {
+    const taskOp = (task: string, status: string) => ({
+      operation_type: "UPDATE_PREPARATION_TASK" as const,
+      path: `/api/v1/orders/o1/items/i1/tasks/${task}/status`,
+      method: "POST" as const,
+      body: { status },
+    });
+    const bodyOf = (call: unknown) => JSON.parse(((call as [string, RequestInit])[1].body as string));
+
+    it("envía en orden las actualizaciones de cocina y parrilla con una clave propia cada una", async () => {
+      const fetchMock = vi.fn().mockImplementation(async () => jsonResponse({ id: "o1" }, 200));
+      vi.stubGlobal("fetch", fetchMock);
+      const ops = [
+        await enqueue(taskOp("papas", "PREPARING")),
+        await enqueue(taskOp("alitas", "PREPARING")),
+        await enqueue(taskOp("papas", "READY")),
+        await enqueue(taskOp("alitas", "READY")),
+      ];
+      const result = await flushQueue();
+      expect(result.synced).toHaveLength(4);
+      const calls = fetchMock.mock.calls as [string, RequestInit][];
+      expect(calls.map(([url]) => url.split("/").slice(-2)[0])).toEqual(["papas", "alitas", "papas", "alitas"]);
+      expect(calls.map((call) => bodyOf(call).status)).toEqual(["PREPARING", "PREPARING", "READY", "READY"]);
+      expect(calls.map((call) => bodyOf(call).client_operation_id)).toEqual(ops.map((op) => op.client_operation_id));
+      expect(new Set(calls.map(([, init]) => (init.headers as Record<string, string>)["Idempotency-Key"])).size).toBe(4);
+    });
+
+    it("tras una desconexión reenvía solo lo pendiente y conserva el mismo UUID", async () => {
+      const fetchMock = vi.fn()
+        .mockImplementationOnce(async () => jsonResponse({ id: "o1" }, 200))
+        .mockRejectedValueOnce(new TypeError("Failed to fetch"));
+      vi.stubGlobal("fetch", fetchMock);
+      const first = await enqueue(taskOp("papas", "PREPARING"));
+      const second = await enqueue(taskOp("papas", "READY"));
+      const third = await enqueue(taskOp("alitas", "PREPARING"));
+
+      const interrupted = await flushQueue();
+      expect(interrupted.networkFailure).toBe(true);
+      expect((await listOperations()).map((op) => op.status)).toEqual(["SYNCED", "LOCAL_PENDING", "LOCAL_PENDING"]);
+
+      resetBackoff();
+      fetchMock.mockImplementation(async () => jsonResponse({ id: "o1" }, 200));
+      const resumed = await flushQueue();
+      expect(resumed.synced.map((op) => op.client_operation_id)).toEqual([second.client_operation_id, third.client_operation_id]);
+      const keys = (fetchMock.mock.calls as [string, RequestInit][]).map(
+        ([, init]) => (init.headers as Record<string, string>)["Idempotency-Key"],
+      );
+      expect(keys).toEqual([first.client_operation_id, second.client_operation_id, second.client_operation_id, third.client_operation_id]);
+    });
+
+    it("un rechazo del servidor (plato cancelado) no bloquea las demás tareas", async () => {
+      const fetchMock = vi.fn()
+        .mockImplementationOnce(async () => jsonResponse(
+          { error: { code: "ITEM_CANCELLED", message: "El producto fue cancelado.", details: {} } }, 409))
+        .mockImplementationOnce(async () => jsonResponse({ id: "o2" }, 200));
+      vi.stubGlobal("fetch", fetchMock);
+      await enqueue(taskOp("papas", "PREPARING"));
+      await enqueue({ ...taskOp("sopa", "PREPARING"), path: "/api/v1/orders/o2/items/i2/tasks/sopa/status" });
+      const result = await flushQueue();
+      expect(result.failed).toHaveLength(1);
+      expect(result.synced).toHaveLength(1);
+      expect((await listOperations()).map((op) => op.status)).toEqual(["SYNC_ERROR", "SYNCED"]);
+    });
+  });
 });

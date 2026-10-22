@@ -43,6 +43,18 @@ cd backend
 Relaciones `lazy="selectin"` en `orders` (`items`, `commands`, `payments`) para cargar el
 pedido completo en una sola consulta.
 
+### Preparación por tareas (migración `0007_preparation_tasks`)
+
+| Tabla | Columnas clave | Notas |
+|---|---|---|
+| `menu_preparation_steps` | `menu_item_id` (CASCADE), `name`, `area` (`KITCHEN/GRILL`), `expected_minutes` (0–600), `sort_order`, `is_active` | receta **vigente** del producto |
+| `order_item_preparation_tasks` | `order_item_id` (CASCADE), `menu_step_id?` (SET NULL), `name`, `area`, `expected_minutes`, `sort_order`, `status`, `started_at`, `ready_at`, `cancelled_at` | copia congelada al crear la comanda; los pedidos nunca vuelven a leer la receta |
+
+`order_items` sigue siendo la única fila cobrable (`quantity`, `unit_price_snapshot`) y conserva
+el estado comercial (derivado de las tareas). `order_items.preparation_area` y
+`expected_prep_minutes_snapshot` quedan como resumen (área de la primera tarea, tiempo de la más larga).
+Ambas tablas tienen RLS activado como el resto.
+
 ### Cobro
 
 | Tabla | Columnas clave | Notas |

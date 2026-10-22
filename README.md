@@ -15,6 +15,8 @@ página son exclusivamente de desarrollo/pruebas.
 
 Notificaciones: [diagnóstico, configuración VAPID y matriz física](./docs/notifications.md).
 
+Cobros simplificados y platos con preparación en varias áreas: [diseño, despliegue y guía de usuario](./docs/PREPARACION_MULTIAREA_Y_COBROS.md).
+
 ---
 
 ## 1. Requisitos

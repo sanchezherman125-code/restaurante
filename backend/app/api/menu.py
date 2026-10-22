@@ -6,7 +6,7 @@ from app.core import audit as audit_actions
 from app.core.deps import AdminUser, AreaUser, DbSession, StaffUser
 from app.core.errors import ConflictError, NotFoundError, ValidationAppError
 from app.models import MenuCategory, MenuItem
-from app.models.enums import AvailabilityStatus
+from app.models.enums import AvailabilityStatus, PreparationArea
 from app.schemas.menu import (
     AvailabilityUpdate,
     CategoryCreate,
@@ -16,7 +16,9 @@ from app.schemas.menu import (
     MenuItemOut,
     MenuItemUpdate,
     MenuOut,
+    PreparationStepIn,
 )
+from app.services import preparation as prep
 from app.ws.hub import hub
 
 router = APIRouter(prefix="/menu", tags=["menu"])
@@ -78,8 +80,19 @@ def create_item(payload: MenuItemCreate, db: DbSession, _: AdminUser) -> MenuIte
     category = db.get(MenuCategory, payload.category_id)
     if category is None:
         raise NotFoundError("CATEGORY_NOT_FOUND", "Categoría no encontrada.")
-    item = MenuItem(**payload.model_dump())
+    data = payload.model_dump(exclude={"preparation_steps"})
+    item = MenuItem(**data)
     db.add(item)
+    db.flush()
+    if item.requires_preparation:
+        steps = payload.preparation_steps or [
+            PreparationStepIn(
+                name=payload.name,
+                area=payload.preparation_area or PreparationArea.KITCHEN,
+                expected_minutes=payload.expected_prep_minutes,
+            )
+        ]
+        prep.sync_menu_steps(db, item, steps)
     db.commit()
     db.refresh(item)
     return _item_out(item)
@@ -90,15 +103,36 @@ def update_item(item_id: UUID, payload: MenuItemUpdate, db: DbSession, admin: Ad
     item = db.get(MenuItem, item_id)
     if item is None:
         raise NotFoundError("MENU_ITEM_NOT_FOUND", "Producto no encontrado.")
-    data = payload.model_dump(exclude_unset=True)
+    data = payload.model_dump(exclude_unset=True, exclude={"preparation_steps"})
     if "preparation_area" in data and data["preparation_area"] is not None:
         data["preparation_area"] = data["preparation_area"].value
     requires_preparation = data.get("requires_preparation", item.requires_preparation)
     preparation_area = data.get("preparation_area", item.preparation_area)
+    steps_in = payload.preparation_steps
+    legacy_area_or_time = bool({"preparation_area", "expected_prep_minutes"} & data.keys())
     if requires_preparation:
-        if preparation_area not in ("KITCHEN", "GRILL"):
-            raise ValidationAppError("PREPARATION_AREA_REQUIRED", "Seleccione KITCHEN o GRILL para este producto.")
+        if steps_in is None and (legacy_area_or_time or not item.preparation_steps):
+            # Cliente que aún edita un solo área/tiempo: solo válido si la receta tiene a lo sumo una tarea.
+            if len(item.preparation_steps) > 1 and legacy_area_or_time:
+                raise ValidationAppError(
+                    "PREPARATION_STEPS_REQUIRED",
+                    "Este producto tiene varias tareas; edítelas en 'Preparación del producto'.",
+                )
+            if preparation_area not in ("KITCHEN", "GRILL"):
+                raise ValidationAppError("PREPARATION_AREA_REQUIRED", "Seleccione KITCHEN o GRILL para este producto.")
+            current = item.preparation_steps[0] if item.preparation_steps else None
+            steps_in = [
+                PreparationStepIn(
+                    id=current.id if current else None,
+                    name=current.name if current else data.get("name", item.name),
+                    area=preparation_area,
+                    expected_minutes=data.get("expected_prep_minutes", item.expected_prep_minutes),
+                )
+            ]
+        elif steps_in is not None and not steps_in:
+            raise ValidationAppError("PREPARATION_STEPS_REQUIRED", "Agregue al menos una tarea de preparación.")
     else:
+        steps_in = []
         data["preparation_area"] = None
         data["expected_prep_minutes"] = None
     if "price" in data and data["price"] is not None and data["price"] != item.price:
@@ -111,8 +145,22 @@ def update_item(item_id: UUID, payload: MenuItemUpdate, db: DbSession, admin: Ad
             before_data={"price": str(item.price)},
             after_data={"price": str(data["price"])},
         )
+    before_steps = [(s.name, s.area, s.expected_minutes, s.is_active) for s in item.preparation_steps]
     for key, value in data.items():
         setattr(item, key, value)
+    if steps_in is not None:
+        prep.sync_menu_steps(db, item, steps_in)
+        after_steps = [(s.name, s.area, s.expected_minutes, s.is_active) for s in item.preparation_steps]
+        if after_steps != before_steps:
+            audit_actions.audit(
+                db,
+                user_id=admin.id,
+                action=audit_actions.MENU_PREPARATION_CHANGED,
+                entity_type="menu_items",
+                entity_id=item.id,
+                before_data={"steps": [list(s) for s in before_steps]},
+                after_data={"steps": [list(s) for s in after_steps]},
+            )
     db.commit()
     db.refresh(item)
     hub.broadcast("menu.changed", {"menu_item_id": str(item.id)}, {"admin", "waiters", "kitchen", "grill"})

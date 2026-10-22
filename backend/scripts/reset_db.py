@@ -21,6 +21,7 @@ TRUNCATE TABLE
     payments,
     bill_split_items,
     bill_splits,
+    order_item_preparation_tasks,
     order_items,
     commands,
     orders,

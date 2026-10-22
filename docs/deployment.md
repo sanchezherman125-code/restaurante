@@ -70,12 +70,15 @@ la base conserva el pedido. Múltiples instancias permanentes requieren un broke
 4. Si existen totales negativos, sobrepagos, divisiones de monto cero o varios turnos abiertos,
    la migración aborta. Reconcilie esos registros con el responsable del negocio y vuelva
    a ejecutarla; la migración no reescribe importes históricos.
-5. Las sesiones anteriores dejan de ser válidas: el personal debe iniciar sesión otra vez.
+5. La migración 0007 crea `menu_preparation_steps` y `order_item_preparation_tasks` y las rellena
+   (una tarea por producto/plato con preparación). Es aditiva y re-ejecutable; no altera importes,
+   pagos ni estados. Ver `docs/PREPARACION_MULTIAREA_Y_COBROS.md` (orden de despliegue).
+6. Las sesiones anteriores dejan de ser válidas: el personal debe iniciar sesión otra vez.
    Sincronice antes de actualizar cualquier dispositivo con operaciones locales pendientes.
    Las operaciones antiguas sin usuario identificado quedan para revisión explícita.
-6. Las tablas habilitan RLS sin políticas públicas: la autorización se hace en FastAPI.
+7. Las tablas habilitan RLS sin políticas públicas: la autorización se hace en FastAPI.
    No conceda acceso directo a `anon`/`authenticated` para estas tablas.
-7. Los comprobantes nuevos se consultan por API con usuario propietario o administrador.
+8. Los comprobantes nuevos se consultan por API con usuario propietario o administrador.
    Para comprobantes locales anteriores, la ruta `/uploads` exige autenticación.
    Si había archivos sólo en el disco de otro servidor, muévalos al Storage privado antes
    de reemplazar ese servidor; el Blueprint no transfiere archivos históricos.

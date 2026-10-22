@@ -85,6 +85,12 @@ export const ordersApi = {
 };
 
 export const preparationApi = {
+  setTaskStatus: (orderId: string, itemId: string, taskId: string, status: string, clientOperationId?: string) =>
+    api.post<Order>(
+      `${V1}/orders/${orderId}/items/${itemId}/tasks/${taskId}/status`,
+      { status, ...(clientOperationId ? { client_operation_id: clientOperationId } : {}) },
+      { idempotencyKey: clientOperationId },
+    ),
   kitchen: () => api.get<ItemGroup[]>(`${V1}/preparation/kitchen`),
   grill: () => api.get<ItemGroup[]>(`${V1}/preparation/grill`),
 };

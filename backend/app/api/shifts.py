@@ -13,6 +13,7 @@ from app.schemas.ops import ShiftOut
 from app.schemas.reports import (
     ShiftReport,
 )
+from app.services import orders as order_service
 from app.services import reports as report_service
 from app.ws.hub import hub
 
@@ -59,7 +60,12 @@ def close_shift(shift_id: UUID, db: DbSession, admin: AdminUser) -> ShiftOut:
 
     open_orders = len(
         db.query(Order.id)
-        .filter(Order.shift_id == shift.id, Order.status.in_(OPEN_ORDER_STATUSES))
+        .filter(
+            Order.shift_id == shift.id,
+            # Un pedido pagado por adelantado sigue abierto mientras queden platos por preparar o entregar.
+            Order.status.in_(OPEN_ORDER_STATUSES)
+            | ((Order.status == OrderStatus.PAID) & order_service.pending_preparation_exists()),
+        )
         .with_for_update()
         .all()
     )

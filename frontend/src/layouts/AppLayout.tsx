@@ -8,6 +8,7 @@ import { Modal } from "../components/Modal";
 import { NotificationSettings } from "../components/NotificationSettings";
 import { hasPushSubscription } from "../notifications/push";
 import { SyncIndicator } from "../components/SyncIndicator";
+import { queueCounts, useQueue } from "../stores/queue";
 import { ROLE_LABEL } from "../lib/labels";
 import { useSession } from "../stores/session";
 import { useUi } from "../stores/ui";
@@ -106,6 +107,12 @@ export function AppLayout() {
   const updatePreferences = useUi((state) => state.updatePreferences);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
+  const logoutBlocked = useUi((state) => state.logoutBlocked);
+  const setLogoutBlocked = useUi((state) => state.setLogoutBlocked);
+  const operations = useQueue((state) => state.operations);
+  const flush = useQueue((state) => state.flush);
+  const counts = queueCounts(operations);
+  const unsent = counts.LOCAL_PENDING + counts.SENDING + counts.SYNC_ERROR;
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -190,6 +197,23 @@ export function AppLayout() {
         ))}
       </nav>
       {notificationsOpen && user ? <NotificationSettings userId={user.id} onClose={() => setNotificationsOpen(false)} /> : null}
+      {logoutBlocked ? (
+        <Modal title="Aún no puede cerrar sesión" onClose={() => setLogoutBlocked(false)}
+          footer={
+            <>
+              <button className="btn secondary grow" onClick={() => setLogoutBlocked(false)}>Entendido</button>
+              <button className="btn grow" onClick={() => void flush()}><Icon name="refresh" />Sincronizar ahora</button>
+            </>
+          }>
+          <p>
+            {unsent > 0 ? `Hay ${unsent} ${unsent === 1 ? "operación guardada" : "operaciones guardadas"}` : "Hay operaciones guardadas"} solo en este
+            dispositivo que el servidor aún no recibió. Si cierra sesión ahora podrían perderse.
+          </p>
+          <p className="hint" style={{ marginTop: "var(--s2)" }}>
+            Recupere la conexión y toque «Sincronizar ahora». Si alguna quedó con error, revísela desde el indicador de sincronización de la cabecera.
+          </p>
+        </Modal>
+      ) : null}
       {accountOpen ? (
         <Modal title={user?.display_name ?? "Cuenta"} onClose={() => setAccountOpen(false)}
           footer={<button className="btn danger block" onClick={() => void signOut()}><Icon name="logout" />Cerrar sesión</button>}>

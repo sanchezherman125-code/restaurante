@@ -32,10 +32,12 @@ export const useSession = create<SessionState>()(
         const pending = (await listOperations()).some((op) => op.status !== "SYNCED"
           && (!op.owner_user_id || op.owner_user_id === get().user?.id));
         if (pending) {
-          useUi.getState().toast("warning", "Operaciones pendientes", "Sincronice o resuelva los pendientes antes de cerrar sesión.");
+          // Se explica en un diálogo (visible en cualquier pantalla) en lugar de un aviso fugaz.
+          useUi.getState().setLogoutBlocked(true);
           return;
         }
-        await disablePushNotifications();
+        // Sin service worker activo, "ready" nunca resuelve: no debe bloquear el cierre de sesión.
+        await Promise.race([disablePushNotifications(), new Promise<void>((resolve) => setTimeout(resolve, 2500))]);
         try {
           await authApi.logout();
         } catch {

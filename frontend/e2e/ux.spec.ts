@@ -123,3 +123,35 @@ test("estado sin conexión: el indicador lo dice y la comanda queda marcada como
   await context.setOffline(false);
   await expect(page.locator(".conn")).toContainText("En línea", { timeout: 30_000 });
 });
+
+test("cerrar sesión funciona en escritorio y móvil, y con pendientes explica el motivo", async ({ browser }) => {
+  for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
+    const page = await (await browser.newContext({ viewport })).newPage();
+    await login(page, "mesero1");
+    if (viewport.width >= 900) {
+      await page.getByRole("button", { name: "Cerrar sesión" }).first().click();
+    } else {
+      await page.getByRole("button", { name: /Cuenta de/ }).click();
+      await page.getByRole("dialog").getByRole("button", { name: /Cerrar sesión/ }).click();
+    }
+    await expect(page).toHaveURL(/\/login/);
+  }
+  // Con una operación guardada solo en el dispositivo, no se cierra y se explica.
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  const page = await context.newPage();
+  await login(page, "mesero1");
+  await page.evaluate(() => new Promise<void>((resolve, reject) => {
+    const open = indexedDB.open("restaurante-offline");
+    open.onsuccess = () => {
+      const tx = open.result.transaction("queue", "readwrite");
+      tx.objectStore("queue").put({ client_operation_id: "pendiente-test", operation_type: "REGISTER_EXPENSE", path: "/x", method: "POST", body: {}, parent_operation_id: null, created_at: Date.now(), attempt_count: 0, last_attempt_at: null, status: "SYNC_ERROR", last_error: "x", owner_user_id: JSON.parse(localStorage.getItem("restaurante.session") ?? "{}").state?.user?.id });
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    };
+  }));
+  await page.reload();
+  await page.getByRole("button", { name: /Cuenta de/ }).click();
+  await page.getByRole("dialog").getByRole("button", { name: /Cerrar sesión/ }).click();
+  await expect(page.getByRole("dialog", { name: "Aún no puede cerrar sesión" })).toBeVisible();
+  await expect(page).not.toHaveURL(/\/login/);
+});

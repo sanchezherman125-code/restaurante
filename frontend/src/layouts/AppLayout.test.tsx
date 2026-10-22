@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useSession } from "../stores/session";
+import { useUi } from "../stores/ui";
 import { AppLayout } from "./AppLayout";
 
 vi.mock("@tanstack/react-query", () => ({
@@ -61,5 +62,14 @@ describe("AppLayout", () => {
     const dialog = screen.getByRole("dialog");
     await user.click(within(dialog).getByRole("button", { name: /Cerrar sesión/ }));
     expect(logout).toHaveBeenCalledTimes(1);
+  });
+
+  it("si hay operaciones sin enviar, explica por qué no cierra sesión en un diálogo", () => {
+    useUi.getState().setLogoutBlocked(true);
+    renderAs("WAITER");
+    const dialog = screen.getByRole("dialog", { name: "Aún no puede cerrar sesión" });
+    expect(dialog).toHaveTextContent("el servidor aún no recibió");
+    expect(within(dialog).getByRole("button", { name: /Sincronizar ahora/ })).toBeVisible();
+    useUi.getState().setLogoutBlocked(false);
   });
 });

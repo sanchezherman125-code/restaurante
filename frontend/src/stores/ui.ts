@@ -12,6 +12,8 @@ interface UiState extends NotificationPreferences {
   preferencesUserId: string | null;
   toasts: Toast[];
   connection: ConnectionState;
+  logoutBlocked: boolean;
+  setLogoutBlocked: (blocked: boolean) => void;
   loadPreferences: (userId: string) => void;
   updatePreferences: (userId: string, values: Partial<NotificationPreferences>) => void;
   toast: (kind: ToastKind, title: string, message?: string) => void;
@@ -24,6 +26,8 @@ export const useUi = create<UiState>((set, get) => ({
   preferencesUserId: null,
   toasts: [],
   connection: "connecting",
+  logoutBlocked: false,
+  setLogoutBlocked: (logoutBlocked) => set({ logoutBlocked }),
   loadPreferences: (userId) => {
     try {
       const saved = localStorage.getItem(prefKey(userId));

@@ -263,3 +263,13 @@
   .order-page.view-order .order-catalog, .order-page.view-order .cart-quick-access { display: none; }
   .order-page.view-menu .order-history-card { display: none; }
 }
+
+/* Mesas del mesero en móvil: fichas cuadradas, dos por fila, fáciles de tocar con una mano */
+@media (max-width: 599px) {
+  .table-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .table-tile { aspect-ratio: 1 / 1; min-height: 0; padding: var(--s3); overflow: hidden; }
+  .table-number { font-size: 2.25rem; }
+  .table-top .chip { font-size: 0.7rem; padding: 0 6px; }
+  .table-progress { display: none; }
+  .table-meta strong { margin-left: 0; flex-basis: 100%; }
+}

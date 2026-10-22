@@ -47,9 +47,9 @@ pedido completo en una sola consulta.
 
 | Tabla | Columnas clave | Notas |
 |---|---|---|
-| `bill_splits` | `order_id`, `split_type` (`BY_ITEMS`/`BY_AMOUNT`), `label`, `amount`, `created_by_user_id` | división de cuenta (§30) |
-| `bill_split_items` | `split_id`, `order_item_id`, `quantity`, `amount` | reparto por ítems |
-| `payments` | `order_id`, `split_id?`, `method`, `amount`, `paid_by_user_id`, `paid_at` | pago parcial o total (§31) |
+| `bill_splits` | `order_id`, `split_type`, `label`, `amount`, `created_by_user_id` | **histórica, solo lectura**: la aplicación ya no escribe aquí |
+| `bill_split_items` | `split_id`, `order_item_id`, `quantity`, `amount` | **histórica, solo lectura** |
+| `payments` | `order_id`, `split_id?`, `method`, `amount`, `paid_by_user_id`, `paid_at` | pago parcial o total; `split_id` solo aparece en pagos históricos |
 
 ### Gastos, compras y soporte
 

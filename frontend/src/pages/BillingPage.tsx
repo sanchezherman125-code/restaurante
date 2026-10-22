@@ -8,7 +8,7 @@ import { ApiError, NetworkError } from "../api/client";
 import { errorMessage } from "../lib/send";
 import { useUi } from "../stores/ui";
 import { useSession } from "../stores/session";
-import type { PaymentMethod, SplitType } from "../types/api";
+import type { PaymentMethod } from "../types/api";
 
 const METHODS: { value: PaymentMethod; label: string }[] = [
   { value: "CASH", label: "Efectivo" },
@@ -17,6 +17,15 @@ const METHODS: { value: PaymentMethod; label: string }[] = [
   { value: "CARD", label: "Tarjeta" },
   { value: "OTHER", label: "Otro" },
 ];
+
+const STATUS_LABEL: Record<string, string> = {
+  OPEN: "Abierto",
+  IN_PREPARATION: "En preparación",
+  READY: "Listo",
+  DELIVERED: "Entregado",
+  PAID: "Pagado",
+  CLOSED: "Cerrado",
+};
 
 export function BillingPage() {
   const { orderId = "" } = useParams();
@@ -35,66 +44,21 @@ export function BillingPage() {
     retry: false,
   });
 
-  const [splitType, setSplitType] = useState<SplitType>("BY_AMOUNT");
-  const [splitAmount, setSplitAmount] = useState("");
-  const [splitLabel, setSplitLabel] = useState("");
-  const [itemQuantities, setItemQuantities] = useState<Record<string, number>>({});
   const [method, setMethod] = useState<PaymentMethod>("CASH");
-  const [payAmount, setPayAmount] = useState("");
   const [busy, setBusy] = useState(false);
 
   const data = billing.data;
   const pending = useMemo(() => (data ? Number(data.total) - Number(data.paid_amount) : 0), [data]);
-
-  async function createSplit() {
-    if (!data) return;
-    setBusy(true);
-    try {
-      if (splitType === "BY_AMOUNT") {
-        const amount = Number(splitAmount);
-        if (!Number.isFinite(amount) || amount <= 0) {
-          toast("error", "Ingrese un monto válido");
-          return;
-        }
-        await billingApi.createSplit(orderId, {
-          split_type: "BY_AMOUNT",
-          amount: amount.toFixed(2),
-          label: splitLabel.trim() || null,
-        });
-      } else {
-        const items = Object.entries(itemQuantities)
-          .filter(([, qty]) => qty > 0)
-          .map(([id, qty]) => ({ order_item_id: id, quantity: qty }));
-        if (items.length === 0) {
-          toast("error", "Seleccione al menos un producto");
-          return;
-        }
-        await billingApi.createSplit(orderId, {
-          split_type: "BY_ITEMS",
-          label: splitLabel.trim() || null,
-          items,
-        });
-      }
-      toast("success", "División registrada");
-      setSplitAmount("");
-      setSplitLabel("");
-      setItemQuantities({});
-      void queryClient.invalidateQueries({ queryKey: ["billing", orderId] });
-    } catch (error) {
-      toast("error", "No se pudo dividir la cuenta", errorMessage(error));
-    } finally {
-      setBusy(false);
-    }
-  }
 
   async function registerPayment() {
     if (!data) return;
     setBusy(true);
     try {
       const request = JSON.parse(localStorage.getItem(paymentAttemptKey) ?? "null") as Record<string, unknown> | null;
-      const amount = Number(payAmount || pending.toFixed(2));
+      // El flujo normal cobra siempre el saldo pendiente completo.
+      const amount = pending;
       if (!request && (!Number.isFinite(amount) || amount <= 0)) {
-        toast("error", "Ingrese un monto válido");
+        toast("error", "No hay saldo pendiente por cobrar");
         return;
       }
       const payload = request ?? {
@@ -109,7 +73,6 @@ export function BillingPage() {
       localStorage.removeItem(paymentAttemptKey);
       setUncertainPayment(false);
       toast("success", "Pago registrado", result.became_paid ? "Pedido pagado en su totalidad" : undefined);
-      setPayAmount("");
       void queryClient.invalidateQueries({ queryKey: ["billing", orderId] });
       void queryClient.invalidateQueries({ queryKey: ["orders"] });
       void queryClient.invalidateQueries({ queryKey: ["tables"] });
@@ -142,17 +105,20 @@ export function BillingPage() {
     );
   }
 
+  const payments = data.payments ?? [];
+
   return (
     <div className="stack">
       {uncertainPayment ? <div className="card">
         <p>Hay un pago cuya respuesta quedó pendiente. Verifique ese pago antes de registrar otro.</p>
         <button className="btn" disabled={busy} onClick={() => void registerPayment()}>Verificar pago pendiente</button>
       </div> : null}
+
       <div className="card">
         <div className="row wrap">
           <div className="grow">
             <h2>{data.table_name ?? "Pedido"}</h2>
-            <span className="chip info">{data.status}</span>
+            <span className="chip info">{STATUS_LABEL[data.status] ?? data.status}</span>
           </div>
           <button className="btn ghost small" onClick={() => navigate(-1)}>
             ← Volver
@@ -165,162 +131,56 @@ export function BillingPage() {
           </div>
           <div className="kpi">
             <div className="label">Pendiente</div>
-            <div className="value" style={{ color: pending > 0 ? "var(--warning)" : "var(--success)" }}>
-              {money(pending)}
+            <div className="value" style={{ color: pending > 0.001 ? "var(--warning)" : "var(--success)" }}>
+              {money(pending > 0.001 ? pending : 0)}
             </div>
           </div>
         </div>
-      </div>
-
-      <div className="card">
-        <div className="section-title" style={{ marginTop: 0 }}>
-          <h2>Detalle</h2>
-        </div>
-        <table className="data">
-          <thead>
-            <tr>
-              <th>Producto</th>
-              <th>Cant.</th>
-              <th>Importe</th>
-            </tr>
-          </thead>
-          <tbody>
-            {data.items.map((item) => (
-              <tr key={item.order_item_id}>
-                <td>
-                  {item.name}
-                  {item.split_quantity > 0 ? <span className="chip info" style={{ marginLeft: 6 }}>div. {item.split_quantity}</span> : null}
-                </td>
-                <td>{item.quantity}</td>
-                <td>{money(item.total)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
         <div className="row" style={{ marginTop: 10 }}>
           <span className="grow hint">Pagado</span>
           <strong style={{ color: "var(--success)" }}>{money(data.paid_amount)}</strong>
         </div>
       </div>
 
+      <div className="card">
+        <div className="section-title" style={{ marginTop: 0 }}>
+          <h2>Consumo</h2>
+        </div>
+        {data.items.map((item) => (
+          <div className="item-row" key={item.order_item_id}>
+            <span className="qty">×{item.quantity}</span>
+            <div className="name">
+              <div style={{ fontWeight: 700 }}>{item.name}</div>
+              <div className="hint">{money(item.unit_price)} c/u</div>
+            </div>
+            <strong>{money(item.total)}</strong>
+          </div>
+        ))}
+        {data.items.length === 0 ? <div className="hint">Sin productos en la cuenta.</div> : null}
+      </div>
+
       {pending > 0.001 ? (
-        <>
-          <div className="card">
-            <div className="section-title" style={{ marginTop: 0 }}>
-              <h2>Dividir cuenta</h2>
-            </div>
-            <div className="segmented" style={{ marginBottom: 12 }}>
-              <button className={splitType === "BY_AMOUNT" ? "active" : ""} onClick={() => setSplitType("BY_AMOUNT")}>
-                Por monto
-              </button>
-              <button className={splitType === "BY_ITEMS" ? "active" : ""} onClick={() => setSplitType("BY_ITEMS")}>
-                Por productos
-              </button>
-            </div>
-
-            <div className="field">
-              <label className="label" htmlFor="split-label">Etiqueta (opcional)</label>
-              <input
-                id="split-label"
-                className="input"
-                value={splitLabel}
-                onChange={(event) => setSplitLabel(event.target.value)}
-                placeholder="Ej. Mesa 3 — Juan"
-              />
-            </div>
-
-            {splitType === "BY_AMOUNT" ? (
-              <div className="field">
-                <label className="label" htmlFor="split-amount">Monto a dividir (S/)</label>
-                <input
-                  id="split-amount"
-                  className="input"
-                  inputMode="decimal"
-                  value={splitAmount}
-                  onChange={(event) => setSplitAmount(event.target.value)}
-                  placeholder={pending.toFixed(2)}
-                />
-              </div>
-            ) : (
-              <div className="stack" style={{ marginBottom: 12 }}>
-                {data.items.map((item) => {
-                  const available = item.quantity - item.split_quantity;
-                  const selected = itemQuantities[item.order_item_id] ?? 0;
-                  return (
-                    <div className="row" key={item.order_item_id}>
-                      <div className="grow">
-                        <div>{item.name}</div>
-                        <div className="hint">
-                          {money(item.unit_price)} c/u · disponibles {available}
-                        </div>
-                      </div>
-                      <div className="qty-stepper">
-                        <button
-                          onClick={() =>
-                            setItemQuantities((state) => ({
-                              ...state,
-                              [item.order_item_id]: Math.max(0, selected - 1),
-                            }))
-                          }
-                        >
-                          −
-                        </button>
-                        <span className="value">{selected}</span>
-                        <button
-                          disabled={selected >= available}
-                          onClick={() =>
-                            setItemQuantities((state) => ({
-                              ...state,
-                              [item.order_item_id]: Math.min(available, selected + 1),
-                            }))
-                          }
-                        >
-                          +
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-
-            <button className="btn block secondary" onClick={() => void createSplit()} disabled={busy}>
-              Dividir
-            </button>
+        <div className="card">
+          <div className="section-title" style={{ marginTop: 0 }}>
+            <h2>Cobrar</h2>
           </div>
-
-          <div className="card">
-            <div className="section-title" style={{ marginTop: 0 }}>
-              <h2>Registrar pago</h2>
-            </div>
-            <div className="segmented" style={{ marginBottom: 12, flexWrap: "wrap" }}>
-              {METHODS.map((entry) => (
-                <button
-                  key={entry.value}
-                  className={method === entry.value ? "active" : ""}
-                  onClick={() => setMethod(entry.value)}
-                >
-                  {entry.label}
-                </button>
-              ))}
-            </div>
-            <div className="field">
-              <label className="label" htmlFor="pay-amount">Monto (S/)</label>
-              <input
-                id="pay-amount"
-                className="input"
-                inputMode="decimal"
-                value={payAmount}
-                onChange={(event) => setPayAmount(event.target.value)}
-                placeholder={pending.toFixed(2)}
-              />
-            </div>
-            <button className="btn block success" onClick={() => void registerPayment()} disabled={busy}>
-              {busy ? "Registrando…" : `Cobrar ${money(payAmount || pending.toFixed(2))}`}
-            </button>
-            <p className="hint">El cobro requiere conexión. Se marca el pedido como pagado al cubrir el total.</p>
+          <div className="segmented" style={{ marginBottom: 12, flexWrap: "wrap" }} role="group" aria-label="Método de pago">
+            {METHODS.map((entry) => (
+              <button
+                key={entry.value}
+                className={method === entry.value ? "active" : ""}
+                aria-pressed={method === entry.value}
+                onClick={() => setMethod(entry.value)}
+              >
+                {entry.label}
+              </button>
+            ))}
           </div>
-        </>
+          <button className="btn block success" onClick={() => void registerPayment()} disabled={busy}>
+            {busy ? "Registrando…" : `Cobrar ${money(pending)}`}
+          </button>
+          <p className="hint">El cobro requiere conexión. El pedido queda pagado al cubrir el total.</p>
+        </div>
       ) : (
         <div className="card center" style={{ flexDirection: "column", gap: 8 }}>
           <div style={{ fontSize: 40 }}>✅</div>
@@ -331,33 +191,25 @@ export function BillingPage() {
 
       <div className="card">
         <div className="section-title" style={{ marginTop: 0 }}>
-          <h2>Divisiones y pagos</h2>
+          <h2>Pagos realizados</h2>
         </div>
-        {data.splits.length === 0 && data.payments.length === 0 ? (
-          <div className="hint">Sin divisiones ni pagos registrados.</div>
+        {payments.length === 0 ? (
+          <div className="hint">Aún no hay pagos registrados.</div>
         ) : (
-          <>
-            {data.splits.map((split) => (
-              <div className="item-row" key={split.id}>
-                <div className="name">
-                  <div style={{ fontWeight: 700 }}>{split.split_type === "BY_AMOUNT" ? "Por monto" : "Por productos"}</div>
-                  {split.label ? <div className="hint">{split.label}</div> : null}
+          payments.map((payment) => (
+            <div className="item-row" key={payment.id}>
+              <div className="name">
+                <div style={{ fontWeight: 700 }}>
+                  {METHODS.find((entry) => entry.value === payment.method)?.label ?? payment.method}
                 </div>
-                <strong>{money(split.amount)}</strong>
-              </div>
-            ))}
-            {data.payments.map((payment) => (
-              <div className="item-row" key={payment.id}>
-                <div className="name">
-                  <div style={{ fontWeight: 700 }}>
-                    Pago {METHODS.find((entry) => entry.value === payment.method)?.label ?? payment.method}
-                  </div>
-                  <div className="hint">{new Date(payment.paid_at).toLocaleString("es-PE")}</div>
+                <div className="hint">
+                  {new Date(payment.paid_at).toLocaleString("es-PE")}
+                  {payment.split_id ? " · de una división anterior" : ""}
                 </div>
-                <strong style={{ color: "var(--success)" }}>{money(payment.amount)}</strong>
               </div>
-            ))}
-          </>
+              <strong style={{ color: "var(--success)" }}>{money(payment.amount)}</strong>
+            </div>
+          ))
         )}
       </div>
     </div>

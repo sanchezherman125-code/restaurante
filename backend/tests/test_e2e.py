@@ -85,25 +85,11 @@ def test_flujo_principal_completo(admin, mesero, cocina, parrilla, menu_lookup, 
         )
         assert response.status_code == 200, response.text
 
-    # 12-13. ADMIN divide cuenta y registra pago
+    # 12-13. La división de cuentas ya no existe: se cobra el saldo completo
     billing = admin.client.get(f"/api/v1/orders/{order['id']}/billing").json()
-    pollo_line = next(i for i in billing["items"] if i["name"] == "Pollo a la brasa")
-    split = admin.client.post(
-        f"/api/v1/orders/{order['id']}/splits",
-        json={
-            "split_type": "BY_ITEMS",
-            "label": "Persona A",
-            "items": [{"order_item_id": pollo_line["order_item_id"], "quantity": 1}],
-        },
-    )
-    assert split.status_code == 201, split.text
-
-    remaining = float(billing["pending_amount"]) - float(split.json()["amount"])
-    split2 = admin.client.post(
-        f"/api/v1/orders/{order['id']}/splits",
-        json={"split_type": "BY_AMOUNT", "label": "Resto", "amount": f"{remaining:.2f}"},
-    )
-    assert split2.status_code == 201, split2.text
+    assert admin.client.post(f"/api/v1/orders/{order['id']}/splits", json={
+        "split_type": "BY_AMOUNT", "amount": "10.00",
+    }).status_code == 410
 
     payment = admin.client.post(
         f"/api/v1/orders/{order['id']}/payments",

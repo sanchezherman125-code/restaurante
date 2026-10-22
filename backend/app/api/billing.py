@@ -1,22 +1,19 @@
-from decimal import Decimal
 from uuid import UUID
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
-from sqlalchemy import func
 
 from app.core import audit as audit_actions
-from app.core.deps import CurrentUser, DbSession, ensure_order_in_open_shift
-from app.core.errors import ConflictError, ForbiddenError, NotFoundError, ValidationAppError
+from app.core.deps import CurrentUser, DbSession
+from app.core.errors import ApiError, ConflictError, ForbiddenError, NotFoundError, ValidationAppError
 from app.core.idempotency import execute_idempotent
-from app.models import BillSplit, BillSplitItem, Order, OrderItem, Payment
-from app.models.enums import ItemStatus, OrderStatus, SplitType
+from app.models import BillSplit, Order, Payment
+from app.models.enums import ItemStatus, OrderStatus
 from app.schemas.billing import (
     BillingItemOut,
     BillingOut,
     PaymentCreate,
     PaymentOut,
-    SplitCreate,
     SplitOut,
 )
 from app.services import orders as order_service
@@ -47,29 +44,10 @@ def _authorize_billing(user, order: Order) -> None:
     raise ForbiddenError("BILLING_FORBIDDEN", "No tiene permiso para consultar o modificar este cobro.")
 
 
-def _lock_order(db, order_id: UUID) -> Order:
-    order = db.query(Order).filter(Order.id == order_id).populate_existing().with_for_update(of=Order).one_or_none()
-    if order is None:
-        raise NotFoundError("ORDER_NOT_FOUND", "Pedido no encontrado.")
-    return order
-
-
-def _split_quantities(db, order_id: UUID) -> dict[UUID, int]:
-    rows = (
-        db.query(BillSplitItem.order_item_id, func.coalesce(func.sum(BillSplitItem.quantity), 0))
-        .join(BillSplit, BillSplit.id == BillSplitItem.split_id)
-        .filter(BillSplit.order_id == order_id)
-        .group_by(BillSplitItem.order_item_id)
-        .all()
-    )
-    return {row[0]: int(row[1]) for row in rows}
-
-
 @router.get("/{order_id}/billing", response_model=BillingOut)
 def get_billing(order_id: UUID, db: DbSession, user: CurrentUser) -> BillingOut:
     order = _get_order(db, order_id)
     _authorize_billing(user, order)
-    split_qtys = _split_quantities(db, order.id)
     items = [
         BillingItemOut(
             order_item_id=i.id,
@@ -78,12 +56,12 @@ def get_billing(order_id: UUID, db: DbSession, user: CurrentUser) -> BillingOut:
             unit_price=i.unit_price_snapshot,
             total=i.unit_price_snapshot * i.quantity,
             status=i.status.value if isinstance(i.status, ItemStatus) else str(i.status),
-            split_quantity=split_qtys.get(i.id, 0),
         )
         for i in order.items
         if i.status != ItemStatus.CANCELLED
     ]
-    splits = db.query(BillSplit).filter(BillSplit.order_id == order.id).all()
+    # Solo lectura: las divisiones históricas siguen siendo consultables para auditoría contable.
+    legacy_splits = db.query(BillSplit).filter(BillSplit.order_id == order.id).order_by(BillSplit.created_at).all()
     return BillingOut(
         order_id=order.id,
         table_name=order.table_name,
@@ -94,99 +72,15 @@ def get_billing(order_id: UUID, db: DbSession, user: CurrentUser) -> BillingOut:
         total=order.total,
         paid_amount=order.paid_amount,
         pending_amount=order.total - order.paid_amount,
-        splits=[SplitOut.model_validate(s) for s in splits],
-        payments=[PaymentOut.model_validate(p) for p in order.payments],
+        legacy_splits=[SplitOut.model_validate(s) for s in legacy_splits],
+        payments=[PaymentOut.model_validate(p) for p in sorted(order.payments, key=lambda p: p.paid_at)],
     )
 
 
-@router.post("/{order_id}/splits", response_model=SplitOut, status_code=201)
-def create_split(order_id: UUID, payload: SplitCreate, db: DbSession, user: CurrentUser) -> SplitOut:
-    if user.role not in ("ADMIN", "WAITER"):
-        raise ValidationAppError("SPLIT_FORBIDDEN", "Solo meseros o administradores dividen cuentas.")
-    order = _get_order(db, order_id)
-    _authorize_billing(user, order)
-    ensure_order_in_open_shift(db, order.shift_id)
-    order = _lock_order(db, order_id)
-    if order.status not in OPEN_STATUSES and order.status != OrderStatus.PAID:
-        raise ConflictError("ORDER_ALREADY_CLOSED", "El pedido ya está cerrado.")
-
-    pending = order.total - order.paid_amount
-    split_qtys = _split_quantities(db, order.id)
-    existing_split_total = (
-        db.query(func.coalesce(func.sum(BillSplit.amount), 0)).filter(BillSplit.order_id == order.id).scalar()
-    )
-    split_payments = (
-        db.query(func.coalesce(func.sum(Payment.amount), 0))
-        .filter(
-            Payment.order_id == order.id,
-            Payment.split_id.is_not(None),
-        )
-        .scalar()
-    )
-    available = pending - (Decimal(existing_split_total) - Decimal(split_payments))
-
-    if payload.split_type == SplitType.BY_AMOUNT:
-        amount = payload.amount
-        if amount > available:
-            raise ValidationAppError(
-                "SPLIT_EXCEEDS_PENDING",
-                "La suma de divisiones no puede exceder el total pendiente.",
-                {"pending": str(available)},
-            )
-        split = BillSplit(
-            order_id=order.id,
-            split_type=SplitType.BY_AMOUNT.value,
-            label=payload.label,
-            amount=amount,
-            created_by_user_id=user.id,
-        )
-        db.add(split)
-    else:
-        allocated: dict[UUID, int] = {}
-        amount = Decimal("0.00")
-        for entry in payload.items:
-            item = db.get(OrderItem, entry.order_item_id)
-            if item is None or item.order_id != order.id:
-                raise NotFoundError("ITEM_NOT_FOUND", "Producto no encontrado en este pedido.")
-            if item.status == ItemStatus.CANCELLED:
-                raise ValidationAppError("ITEM_CANCELLED", "No puede dividirse un producto cancelado.")
-            already = allocated.get(item.id, 0) + split_qtys.get(item.id, 0)
-            if already + entry.quantity > item.quantity:
-                raise ValidationAppError(
-                    "SPLIT_QUANTITY_EXCEEDED",
-                    f"Ya se asignó {already} de {item.quantity} de '{item.menu_item_name_snapshot}'.",
-                )
-            allocated[item.id] = already + entry.quantity
-            amount += item.unit_price_snapshot * entry.quantity
-        if amount > available:
-            raise ValidationAppError(
-                "SPLIT_EXCEEDS_TOTAL",
-                "La suma de divisiones no puede exceder el total pendiente.",
-                {"pending": str(available)},
-            )
-        split = BillSplit(
-            order_id=order.id,
-            split_type=SplitType.BY_ITEMS.value,
-            label=payload.label,
-            amount=amount,
-            created_by_user_id=user.id,
-        )
-        db.add(split)
-        db.flush()
-        for entry in payload.items:
-            item = db.get(OrderItem, entry.order_item_id)
-            db.add(
-                BillSplitItem(
-                    split_id=split.id,
-                    order_item_id=item.id,
-                    quantity=entry.quantity,
-                    amount=item.unit_price_snapshot * entry.quantity,
-                )
-            )
-
-    db.commit()
-    db.refresh(split)
-    return SplitOut.model_validate(split)
+@router.post("/{order_id}/splits", status_code=410, include_in_schema=False)
+def create_split_removed(order_id: UUID, user: CurrentUser) -> None:
+    """La división de cuentas se retiró: se rechaza explícitamente en lugar de ignorarse."""
+    raise ApiError(410, "SPLITS_DISABLED", "La división de cuentas ya no está disponible. Registre el cobro completo.")
 
 
 @router.post("/{order_id}/payments", status_code=201)
@@ -198,6 +92,10 @@ def register_payment(
 ) -> JSONResponse:
     if user.role not in ("ADMIN", "WAITER"):
         raise ValidationAppError("PAYMENT_FORBIDDEN", "Solo meseros o administradores registran pagos.")
+    if payload.split_id is not None:
+        raise ValidationAppError(
+            "SPLIT_PAYMENTS_DISABLED", "Los pagos por división ya no se admiten. Registre el cobro sin división."
+        )
     order = _get_order(db, order_id)
     _authorize_billing(user, order)
 
@@ -215,24 +113,10 @@ def register_payment(
             )
         payment = Payment(
             order_id=locked_order.id,
-            split_id=payload.split_id,
             method=payload.method.value,
             amount=payload.amount,
             created_by_user_id=user.id,
         )
-        if payload.split_id is not None:
-            split = db.get(BillSplit, payload.split_id)
-            if split is None or split.order_id != locked_order.id:
-                raise ValidationAppError("SPLIT_NOT_IN_ORDER", "La división no pertenece a este pedido.")
-            split_paid = (
-                db.query(func.coalesce(func.sum(Payment.amount), 0))
-                .filter(
-                    Payment.split_id == split.id,
-                )
-                .scalar()
-            )
-            if payload.amount > split.amount - Decimal(split_paid):
-                raise ValidationAppError("PAYMENT_EXCEEDS_SPLIT", "El pago supera el saldo de esta división.")
         db.add(payment)
         locked_order.paid_amount = locked_order.paid_amount + payload.amount
         became_paid = locked_order.paid_amount >= locked_order.total

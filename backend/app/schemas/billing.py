@@ -2,36 +2,14 @@ from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.enums import PaymentMethod, SplitType
 
 
-class SplitItemCreate(BaseModel):
-    order_item_id: UUID
-    quantity: int = Field(default=1, ge=1, le=99)
-
-
-class SplitCreate(BaseModel):
-    split_type: SplitType
-    label: str | None = Field(default=None, max_length=120)
-    amount: Decimal | None = Field(default=None, gt=0, max_digits=12, decimal_places=2)
-    items: list[SplitItemCreate] = Field(default_factory=list)
-
-    @model_validator(mode="after")
-    def validate_payload(self) -> "SplitCreate":
-        if self.split_type == SplitType.BY_AMOUNT:
-            if self.amount is None:
-                raise ValueError("amount es obligatorio para división por monto")
-        else:
-            if not self.items:
-                raise ValueError("items es obligatorio para división por productos")
-            if len({item.order_item_id for item in self.items}) != len(self.items):
-                raise ValueError("Cada producto debe aparecer una sola vez en la división")
-        return self
-
-
 class SplitOut(BaseModel):
+    """Solo lectura: divisiones creadas antes de retirar la función."""
+
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
@@ -45,6 +23,7 @@ class SplitOut(BaseModel):
 class PaymentCreate(BaseModel):
     method: PaymentMethod
     amount: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
+    # Obsoleto: se mantiene solo para rechazar explícitamente clientes antiguos (422 SPLIT_PAYMENTS_DISABLED).
     split_id: UUID | None = None
     client_operation_id: UUID | None = None
 
@@ -67,7 +46,6 @@ class BillingItemOut(BaseModel):
     unit_price: Decimal
     total: Decimal
     status: str
-    split_quantity: int = 0
 
 
 class BillingOut(BaseModel):
@@ -80,5 +58,5 @@ class BillingOut(BaseModel):
     total: Decimal
     paid_amount: Decimal
     pending_amount: Decimal
-    splits: list[SplitOut]
+    legacy_splits: list[SplitOut] = []
     payments: list[PaymentOut]

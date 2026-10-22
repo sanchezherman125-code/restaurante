@@ -72,9 +72,14 @@ Roles: `Staff` = cualquier usuario autenticado; `Admin`; `Waiter`; `Kitchen`; `G
 | PATCH | `/api/v1/orders/{order_id}/items/{item_id}` | Waiter/Admin | — |
 | POST | `/api/v1/orders/{order_id}/items/{item_id}/cancel` | Waiter/Admin | — |
 | POST | `/api/v1/orders/{order_id}/items/{item_id}/status` | según área | — |
-| GET | `/api/v1/orders/{order_id}/billing` | Staff | — |
-| GET/POST | `/api/v1/orders/{order_id}/payments` | Staff / según permiso | `client_operation_id` (body) |
-| POST | `/api/v1/orders/{order_id}/splits` | Staff | sin idempotencia |
+| GET | `/api/v1/orders/{order_id}/billing` | Waiter dueño / Admin | — |
+| GET/POST | `/api/v1/orders/{order_id}/payments` | Waiter dueño / Admin | `client_operation_id` (body) |
+| POST | `/api/v1/orders/{order_id}/splits` | — | **retirado: responde 410 `SPLITS_DISABLED`** |
+
+**Cobro.** Ya no existen divisiones. `POST .../payments` rechaza `split_id` con 422
+`SPLIT_PAYMENTS_DISABLED`; el monto nunca puede superar el saldo pendiente (422
+`PAYMENT_EXCEEDS_PENDING`). `GET .../billing` devuelve ítems (sin `split_quantity`), totales,
+`pending_amount`, `payments` y `legacy_splits` (solo lectura, divisiones creadas antes del retiro).
 
 Transiciones de ítem permitidas (§9): `PENDING→PREPARING|READY|DELIVERED|CANCELLED`,
 `PREPARING→READY|CANCELLED`, `READY→DELIVERED`. El endpoint de cambio de estado rechaza

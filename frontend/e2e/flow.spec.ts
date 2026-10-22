@@ -78,19 +78,21 @@ test("§73 flujo principal completo: turno → mesa → comanda → cocina/parri
     await clickAll(waiter.page, /Entregado/);
     await expect(waiter.page.getByRole("button", { name: /Entregado/ })).toHaveCount(0);
 
-    // 10. ADMIN divide la cuenta por monto
+    // 10. ADMIN abre el cobro: ya no existe la división de cuentas
     await admin.page.goto("/pedidos");
     const orderCard = admin.page.locator(".ticket-card", { hasText: "Mesa 4" });
     await expect(orderCard).toBeVisible();
     await orderCard.getByRole("button", { name: /Cobro/ }).click();
     await expect(admin.page.getByRole("heading", { name: "Mesa 4", exact: true })).toBeVisible();
-    await admin.page.getByLabel("Monto a dividir (S/)").fill("10");
-    await admin.page.getByRole("button", { name: "Dividir", exact: true }).click();
-    await expect(admin.page.getByText("División registrada")).toBeVisible();
+    await expect(admin.page.getByText(/dividir/i)).toHaveCount(0);
+    await expect(admin.page.getByLabel("Monto a dividir (S/)")).toHaveCount(0);
+    await expect(admin.page.getByText("Causa limeña")).toBeVisible();
 
-    // 11. ADMIN registra el pago del saldo restante
+    // 11. ADMIN cobra el saldo completo con Yape
+    await admin.page.getByRole("button", { name: "Yape", exact: true }).click();
     await admin.page.getByRole("button", { name: /^Cobrar S\// }).click();
     await expect(admin.page.getByText("Pedido pagado", { exact: true })).toBeVisible();
+    await expect(admin.page.getByText("Pagos realizados")).toBeVisible();
 
     // 12. ADMIN cierra el turno
     await admin.page.goto("/turnos");

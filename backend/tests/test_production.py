@@ -185,20 +185,6 @@ def test_realtime_order_events_only_reach_owner_and_admin():
     other.assert_not_called()
 
 
-def test_split_payment_cannot_overpay_and_paid_splits_do_not_reserve_twice(admin, mesero, open_shift, menu_lookup):
-    order = create_order(mesero)
-    create_command(mesero, order["id"], [{"menu_item_id": menu_lookup["Pollo a la brasa"]["id"]}])
-    path = f"/api/v1/orders/{order['id']}"
-    split = admin.client.post(f"{path}/splits", json={"split_type": "BY_AMOUNT", "amount": "10.00"}).json()
-    assert admin.client.post(f"{path}/payments", json={
-        "method": "CASH", "amount": "11.00", "split_id": split["id"],
-    }).status_code == 422
-    assert admin.client.post(f"{path}/payments", json={
-        "method": "CASH", "amount": "10.00", "split_id": split["id"],
-    }).status_code == 201
-    assert admin.client.post(f"{path}/splits", json={"split_type": "BY_AMOUNT", "amount": "15.00"}).status_code == 201
-
-
 @pytest.mark.parametrize("override", [
     {"jwt_secret": "cambie-este-secreto-en-produccion-muy-largo"},
     {"database_url": "postgresql+psycopg://u:p@db/postgres"},

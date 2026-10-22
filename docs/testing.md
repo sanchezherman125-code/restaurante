@@ -42,7 +42,7 @@ Este comando sólo se necesita si la base E2E aún no existe. Backend y E2E usan
 | `tests/test_auth.py` | login, PIN, JWT/refresh, roles (RBAC), rate limit de login |
 | `tests/test_menu_tables.py` | categorías, productos, disponibilidad, mesas, permisos |
 | `tests/test_orders.py` | creación de pedido/comanda, transiciones de ítem, cancelaciones, idempotencia, eventos/estados |
-| `tests/test_billing.py` | división por ítems/monto, pagos, saldos, comprobantes |
+| `tests/test_billing.py` | cobro simplificado (efectivo/Yape/Plin/tarjeta/otro), saldo, idempotencia, rechazo de divisiones, lectura de pagos históricos de divisiones |
 | `tests/test_shifts_reports.py` | turno abierto/cerrado, bloqueo con pedidos abiertos, snapshot, reportes |
 | `tests/test_e2e.py` | escenario completo de negocio en backend (§73 a nivel API) |
 | `tests/test_production.py` | concordancia de migraciones, RLS, sesiones revocadas, aislamiento idempotente, comprobantes privados, importes y configuración segura |

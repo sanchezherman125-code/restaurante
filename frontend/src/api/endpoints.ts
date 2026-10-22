@@ -12,7 +12,6 @@ import type {
   SalesReport,
   Shift,
   ShiftReport,
-  Split,
   Tokens,
   User,
 } from "../types/api";
@@ -92,8 +91,6 @@ export const preparationApi = {
 
 export const billingApi = {
   get: (orderId: string) => api.get<Billing>(`${V1}/orders/${orderId}/billing`),
-  createSplit: (orderId: string, body: Record<string, unknown>) =>
-    api.post<Split>(`${V1}/orders/${orderId}/splits`, body),
   createPayment: (orderId: string, body: Record<string, unknown>) =>
     api.post<Payment & { order_status: string; became_paid: boolean }>(
       `${V1}/orders/${orderId}/payments`,

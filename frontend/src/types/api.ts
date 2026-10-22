@@ -10,7 +10,6 @@ export type OrderStatus =
   | "CLOSED";
 export type ItemStatus = "PENDING" | "PREPARING" | "READY" | "DELIVERED" | "CANCELLED";
 export type PaymentMethod = "CASH" | "YAPE" | "PLIN" | "CARD" | "OTHER";
-export type SplitType = "BY_ITEMS" | "BY_AMOUNT";
 export type AvailabilityStatus = "AVAILABLE" | "SOLD_OUT";
 export type ShiftStatus = "OPEN" | "CLOSED";
 
@@ -143,10 +142,11 @@ export interface ItemGroup {
   elapsed_seconds: number;
 }
 
-export interface Split {
+/** Solo lectura: divisiones creadas antes de retirar la función. */
+export interface LegacySplit {
   id: string;
   order_id: string;
-  split_type: SplitType;
+  split_type: string;
   label: string | null;
   amount: string;
   created_at: string;
@@ -155,6 +155,7 @@ export interface Split {
 export interface Payment {
   id: string;
   order_id: string;
+  /** Solo informativo: pagos históricos asociados a una división retirada. */
   split_id: string | null;
   method: PaymentMethod;
   amount: string;
@@ -168,7 +169,6 @@ export interface BillingItem {
   unit_price: string;
   total: string;
   status: ItemStatus;
-  split_quantity: number;
 }
 
 export interface Billing {
@@ -181,7 +181,7 @@ export interface Billing {
   total: string;
   paid_amount: string;
   pending_amount: string;
-  splits: Split[];
+  legacy_splits: LegacySplit[];
   payments: Payment[];
 }
 

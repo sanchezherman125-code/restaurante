@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, String, func
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, String, func, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -46,6 +46,7 @@ class OrderItemPreparationTask(Base):
         CheckConstraint("status IN ('PENDING', 'PREPARING', 'READY', 'CANCELLED')", name="ck_prep_task_status"),
         Index("ix_prep_tasks_item", "order_item_id"),
         Index("ix_prep_tasks_area_status", "area", "status"),
+        Index("uq_prep_tasks_legacy_mirror", "order_item_id", unique=True, postgresql_where=text("legacy_mirror")),
     )
 
     id: Mapped[uuid.UUID] = uuid_pk()
@@ -58,6 +59,8 @@ class OrderItemPreparationTask(Base):
     expected_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(16), default="PENDING")
+    # Tarea derivada del plato (relleno, reparación o trigger): única por plato gracias a un índice parcial.
+    legacy_mirror: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     ready_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

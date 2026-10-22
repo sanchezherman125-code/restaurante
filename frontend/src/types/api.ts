@@ -7,7 +7,8 @@ export type OrderStatus =
   | "READY"
   | "DELIVERED"
   | "PAID"
-  | "CLOSED";
+  | "CLOSED"
+  | "CANCELLED";
 export type ItemStatus = "PENDING" | "PREPARING" | "READY" | "DELIVERED" | "CANCELLED";
 export type PaymentMethod = "CASH" | "YAPE" | "PLIN" | "CARD" | "OTHER";
 export type TaskStatus = "PENDING" | "PREPARING" | "READY" | "CANCELLED";

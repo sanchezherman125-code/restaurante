@@ -17,7 +17,7 @@ from app.core.deps import (
 from app.core.errors import ConflictError, ForbiddenError, NotFoundError, ValidationAppError
 from app.core.idempotency import execute_idempotent
 from app.models import Order, OrderItem, OrderItemPreparationTask, User
-from app.models.enums import ItemStatus
+from app.models.enums import ItemStatus, OrderStatus
 from app.schemas.orders import (
     CommandCreate,
     CommandOut,
@@ -31,6 +31,7 @@ from app.schemas.orders import (
 )
 from app.services import orders as order_service
 from app.services import preparation as prep
+from app.ws.hub import hub
 
 router = APIRouter(prefix="/orders", tags=["orders"])
 
@@ -254,6 +255,10 @@ def update_item(
         item.replacement_description = data["replacement_description"]
     order_service.recompute_totals(order)
     order_service.apply_status(order)
+    # Cocina/parrilla (áreas del plato), mesero dueño y admin deben ver al instante la cantidad o nota nueva.
+    hub.after_commit(db, "order_item.updated", order_service.item_event_payload(item),
+                     prep.item_channels(item) | {"waiters"})
+    hub.after_commit(db, "order.updated", order_service.order_event_payload(order), {"waiters", "admin"})
     db.commit()
     return OrderOut.model_validate(order)
 
@@ -277,6 +282,7 @@ def cancel_item(
         order_service.ensure_order_cancellable(locked_order)
         order_service.ensure_shift_open(shift)
         before = {"status": item.status}
+        previous_order_status = locked_order.status
         order_service.cancel_item(db, user, item, payload.reason)
         audit_actions.audit(
             db, user_id=user.id, action=audit_actions.ITEM_CANCELLED,
@@ -285,6 +291,15 @@ def cancel_item(
                         "after_preparation_started": item.cancelled_after_preparation_started},
             device_id=device_id,
         )
+        if locked_order.status == OrderStatus.CANCELLED:
+            # Último producto cancelado: el pedido termina de forma explícita (sin pagos, total 0.00).
+            audit_actions.audit(
+                db, user_id=user.id, action=audit_actions.ORDER_CANCELLED,
+                entity_type="orders", entity_id=locked_order.id,
+                before_data={"status": previous_order_status}, after_data={"status": locked_order.status,
+                                                                          "total": str(locked_order.total)},
+                device_id=device_id,
+            )
         return 200, _mutation_response(user, locked_order)
 
     status, body = execute_idempotent(

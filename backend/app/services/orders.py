@@ -51,14 +51,17 @@ def recompute_totals(order: Order) -> None:
 
 
 def compute_status(order: Order) -> str:
-    if order.status == OrderStatus.CLOSED:
-        return OrderStatus.CLOSED
+    if order.status in (OrderStatus.CLOSED, OrderStatus.CANCELLED):
+        return order.status
     if order.paid_amount is not None and order.total is not None and order.total > 0:
         if order.paid_amount >= order.total:
             return OrderStatus.PAID
 
     active = [i for i in order.items if i.status != ItemStatus.CANCELLED]
     if not active:
+        if order.items and order.paid_amount == 0:
+            # Todos los productos se cancelaron (nunca hubo cobro): estado terminal, no un pedido abierto.
+            return OrderStatus.CANCELLED
         return order.status if order.status in (OrderStatus.PAID, OrderStatus.CLOSED) else OrderStatus.OPEN
 
     prep_items = [i for i in active if i.requires_preparation]
@@ -73,6 +76,8 @@ def compute_status(order: Order) -> str:
 
 def apply_status(order: Order) -> str:
     order.status = compute_status(order)
+    if order.status == OrderStatus.CANCELLED and order.closed_at is None:
+        order.closed_at = utcnow()
     return order.status
 
 
@@ -149,6 +154,8 @@ def get_active_order(db: Session, order_id: UUID) -> Order:
 
 
 def ensure_order_modifiable(order: Order) -> None:
+    if order.status == OrderStatus.CANCELLED:
+        raise ConflictError("ORDER_ALREADY_CANCELLED", "El pedido fue cancelado.")
     if order.status == OrderStatus.CLOSED:
         raise ConflictError("ORDER_ALREADY_CLOSED", "El pedido ya está cerrado.")
     if order.status == OrderStatus.PAID:
@@ -156,6 +163,8 @@ def ensure_order_modifiable(order: Order) -> None:
 
 
 def ensure_order_cancellable(order: Order) -> None:
+    if order.status == OrderStatus.CANCELLED:
+        raise ConflictError("ORDER_ALREADY_CANCELLED", "El pedido ya está cancelado.")
     if order.status == OrderStatus.PAID:
         raise ConflictError("ORDER_ALREADY_PAID", "No se pueden cancelar productos de un pedido pagado.")
     if order.status == OrderStatus.CLOSED:
@@ -196,14 +205,8 @@ def lock_order_item(db: Session, order_id: UUID, item_id: UUID) -> OrderItem:
 
 
 def ensure_table_free(db: Session, table_id: UUID) -> None:
-    existing = (
-        db.query(Order)
-        .filter(
-            Order.table_id == table_id,
-            Order.status.in_([OrderStatus.OPEN, OrderStatus.IN_PREPARATION, OrderStatus.READY, OrderStatus.DELIVERED]),
-        )
-        .first()
-    )
+    """Una mesa está ocupada mientras su pedido tenga trabajo vivo, esté o no pagado (``occupies_table``)."""
+    existing = db.query(Order).filter(Order.table_id == table_id, Order.occupies_table.is_(True)).first()
     if existing is not None:
         raise ConflictError(
             "TABLE_ALREADY_OPEN",
@@ -531,13 +534,12 @@ def serialize_order(order: Order) -> dict:
     return OrderOut.model_validate(order).model_dump(mode="json")
 
 
-def pending_preparation_exists():
-    """EXISTS: el pedido aún tiene platos con preparación sin entregar (independiente del estado de pago)."""
+def pending_work_exists():
+    """EXISTS: el pedido aún tiene productos sin entregar, con o sin preparación (independiente del pago)."""
     return (
         select(OrderItem.id)
         .where(
             OrderItem.order_id == Order.id,
-            OrderItem.requires_preparation.is_(True),
             OrderItem.status.in_([ItemStatus.PENDING, ItemStatus.PREPARING, ItemStatus.READY]),
         )
         .correlate(Order)
@@ -546,10 +548,10 @@ def pending_preparation_exists():
 
 
 def active_orders_query(db: Session, area: str | None = None):
-    """Pedidos con trabajo vivo; un pedido PAID sigue activo mientras queden platos por preparar o entregar."""
+    """Pedidos con trabajo vivo; un pedido PAID sigue activo mientras queden productos por preparar o entregar."""
     query = db.query(Order).filter(
         Order.status.in_([OrderStatus.OPEN, OrderStatus.IN_PREPARATION, OrderStatus.READY, OrderStatus.DELIVERED])
-        | ((Order.status == OrderStatus.PAID) & pending_preparation_exists())
+        | ((Order.status == OrderStatus.PAID) & pending_work_exists())
     )
     if area and area in {a.value for a in PreparationArea}:
         query = (

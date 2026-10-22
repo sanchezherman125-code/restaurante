@@ -27,6 +27,7 @@ class OrderStatus(enum.StrEnum):
     DELIVERED = "DELIVERED"
     PAID = "PAID"
     CLOSED = "CLOSED"
+    CANCELLED = "CANCELLED"  # todos sus productos se cancelaron; sin pagos
 
 
 class ItemStatus(enum.StrEnum):

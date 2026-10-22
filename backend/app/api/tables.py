@@ -5,25 +5,16 @@ from fastapi import APIRouter
 from app.core.deps import AdminUser, DbSession, StaffUser
 from app.core.errors import ConflictError, NotFoundError
 from app.models import Order, RestaurantTable
-from app.models.enums import OrderStatus
 from app.schemas.menu import TableCreate, TableOut, TableUpdate
 from app.ws.hub import hub
 
 router = APIRouter(prefix="/tables", tags=["tables"])
 
-OPEN_STATUSES = [
-    OrderStatus.OPEN,
-    OrderStatus.IN_PREPARATION,
-    OrderStatus.READY,
-    OrderStatus.DELIVERED,
-]
-
-
 def _with_status(db, tables: list[RestaurantTable]) -> list[TableOut]:
     if not tables:
         return []
     open_orders = (
-        db.query(Order.table_id, Order.id).filter(Order.table_id.isnot(None), Order.status.in_(OPEN_STATUSES)).all()
+        db.query(Order.table_id, Order.id).filter(Order.table_id.isnot(None), Order.occupies_table.is_(True)).all()
     )
     order_by_table = {row.table_id: row.id for row in open_orders}
     out: list[TableOut] = []

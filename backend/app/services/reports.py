@@ -13,7 +13,7 @@ from app.models import (
     Shift,
     User,
 )
-from app.models.enums import ItemStatus, TaskStatus
+from app.models.enums import ItemStatus, OrderStatus, TaskStatus
 
 
 def _utc(dt: datetime | None) -> datetime | None:
@@ -80,11 +80,12 @@ def sales_metrics(db: Session, orders: list[Order]) -> dict:
         sales_by_waiter[waiter_name] = sales_by_waiter.get(waiter_name, Decimal("0.00")) + payment.amount
         sales_by_method[payment.method] = sales_by_method.get(payment.method, Decimal("0.00")) + payment.amount
 
+    served = [o for o in orders if o.status != OrderStatus.CANCELLED]  # un pedido cancelado no se atendió
     return {
         "total_sales": total_sales,
-        "orders_count": len(orders),
-        "tables_served": len({o.table_id for o in orders if o.table_id}),
-        "persons_served": sum(o.persons_count or 0 for o in orders),
+        "orders_count": len(served),
+        "tables_served": len({o.table_id for o in served if o.table_id}),
+        "persons_served": sum(o.persons_count or 0 for o in served),
         "sales_by_waiter": sales_by_waiter,
         "sales_by_payment_method": sales_by_method,
     }

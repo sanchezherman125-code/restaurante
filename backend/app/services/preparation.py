@@ -147,28 +147,35 @@ def lock_item_tasks(db: Session, item_id: UUID) -> list[OrderItemPreparationTask
     )
 
 
+MIRROR_STATUS_SQL = """CASE {s} WHEN 'PREPARING' THEN 'PREPARING' WHEN 'READY' THEN 'READY'
+    WHEN 'DELIVERED' THEN 'READY' WHEN 'CANCELLED' THEN 'CANCELLED' ELSE 'PENDING' END"""
+
+# Tarea espejo (derivada del plato). El índice parcial ``uq_prep_tasks_legacy_mirror`` hace que relleno,
+# reparación y trigger de la BD no puedan duplicarla aunque corran a la vez: el perdedor no inserta nada.
+_MIRROR_INSERT = f"""
+    INSERT INTO order_item_preparation_tasks
+        (id, order_item_id, menu_step_id, name, area, expected_minutes, sort_order, status,
+         started_at, ready_at, cancelled_at, legacy_mirror, created_at, updated_at)
+    SELECT gen_random_uuid(), oi.id, NULL, oi.menu_item_name_snapshot, oi.preparation_area,
+           CASE WHEN oi.expected_prep_minutes_snapshot IS NULL THEN NULL
+                ELSE GREATEST(0, LEAST(600, oi.expected_prep_minutes_snapshot)) END,
+           0, {MIRROR_STATUS_SQL.format(s="oi.status")},
+           oi.preparation_started_at, oi.ready_at, oi.cancelled_at, TRUE, oi.created_at, oi.updated_at
+    FROM order_items oi
+    WHERE oi.requires_preparation IS TRUE AND oi.preparation_area IN ('KITCHEN', 'GRILL')
+      AND NOT EXISTS (SELECT 1 FROM order_item_preparation_tasks t WHERE t.order_item_id = oi.id)
+"""
+_ON_CONFLICT = "ON CONFLICT (order_item_id) WHERE legacy_mirror DO NOTHING"
+
+
 def ensure_item_tasks(db: Session, item: OrderItem) -> None:
-    """Un plato creado por una instancia anterior al despliegue recibe su tarea equivalente."""
+    """Un plato sin tareas (escrito por un backend anterior) recibe su tarea equivalente, sin duplicarla."""
     if not item.requires_preparation or item.tasks or item.status == ItemStatus.CANCELLED:
         return
     if item.preparation_area not in PREPARATION_AREAS:
         return
-    item.tasks.append(
-        OrderItemPreparationTask(
-            name=item.menu_item_name_snapshot,
-            area=item.preparation_area,
-            expected_minutes=item.expected_prep_minutes_snapshot,
-            sort_order=0,
-            status={
-                ItemStatus.PREPARING: TaskStatus.PREPARING,
-                ItemStatus.READY: TaskStatus.READY,
-                ItemStatus.DELIVERED: TaskStatus.READY,
-            }.get(ItemStatus(item.status), TaskStatus.PENDING).value,
-            started_at=item.preparation_started_at,
-            ready_at=item.ready_at,
-        )
-    )
-    db.flush()
+    db.execute(text(_MIRROR_INSERT + " AND oi.id = :item " + _ON_CONFLICT), {"item": item.id})
+    db.expire(item, ["tasks"])
 
 
 def advance_tasks(tasks: list[OrderItemPreparationTask], new_status: TaskStatus, now: datetime) -> list:
@@ -237,30 +244,11 @@ def tasks_in_areas(item: OrderItem, areas: set[str]) -> list[OrderItemPreparatio
     return [t for t in live_tasks(item) if t.area in areas]
 
 
-# Misma regla que la migración 0007; se ejecuta al arrancar para cubrir platos creados por una
-# instancia anterior mientras se desplegaba la nueva. Es idempotente: omite platos que ya tienen tareas.
-BACKFILL_TASKS_SQL = text(
-    """
-    INSERT INTO order_item_preparation_tasks
-        (id, order_item_id, menu_step_id, name, area, expected_minutes, sort_order, status,
-         started_at, ready_at, cancelled_at, created_at, updated_at)
-    SELECT gen_random_uuid(), oi.id, NULL, oi.menu_item_name_snapshot, oi.preparation_area,
-           CASE WHEN oi.expected_prep_minutes_snapshot IS NULL THEN NULL
-                ELSE GREATEST(0, LEAST(600, oi.expected_prep_minutes_snapshot)) END,
-           0,
-           CASE oi.status WHEN 'PREPARING' THEN 'PREPARING' WHEN 'READY' THEN 'READY'
-                          WHEN 'DELIVERED' THEN 'READY' WHEN 'CANCELLED' THEN 'CANCELLED' ELSE 'PENDING' END,
-           oi.preparation_started_at, oi.ready_at, oi.cancelled_at, oi.created_at, oi.updated_at
-    FROM order_items oi
-    WHERE oi.requires_preparation IS TRUE
-      AND oi.preparation_area IN ('KITCHEN', 'GRILL')
-      AND NOT EXISTS (SELECT 1 FROM order_item_preparation_tasks t WHERE t.order_item_id = oi.id)
-    """
-)
+BACKFILL_TASKS_SQL = text(_MIRROR_INSERT + _ON_CONFLICT)
 
 
 def backfill_missing_tasks(db: Session) -> int:
-    db.execute(text("SELECT pg_advisory_xact_lock(7007001)"))  # serializa arranques simultáneos
+    """Relleno de arranque (red de seguridad). Idempotente y seguro frente a procesos concurrentes."""
     result = cast("CursorResult", db.execute(BACKFILL_TASKS_SQL))
     count = result.rowcount
     db.commit()

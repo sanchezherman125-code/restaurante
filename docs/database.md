@@ -55,6 +55,10 @@ el estado comercial (derivado de las tareas). `order_items.preparation_area` y
 `expected_prep_minutes_snapshot` quedan como resumen (área de la primera tarea, tiempo de la más larga).
 Ambas tablas tienen RLS activado como el resto.
 
+Migración `0008`: `orders.occupies_table` (trigger; índice único parcial por mesa), `order_items.tasks_managed`,
+`order_item_preparation_tasks.legacy_mirror` (índice único parcial por plato) y triggers de compatibilidad con el
+backend anterior. Estado de pedido nuevo `CANCELLED`.
+
 ### Cobro
 
 | Tabla | Columnas clave | Notas |

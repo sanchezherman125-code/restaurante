@@ -168,3 +168,34 @@ que el resto termina. «Cancelar plato» cancela el plato completo en todas las 
 **Mesero.** Recibe un único aviso cuando todas las áreas terminaron: «Plato listo — …» o, si con ese plato queda
 completo el pedido, «Listo para entregar». Entonces aparece «Entregado ✓».
 Mientras tanto, en el pedido ve el avance por área.
+
+## 11. Correcciones de la auditoría independiente (migración `0008_occupancy_and_compat`)
+
+`0007` no se modificó (ya publicada); `0008` la corrige hacia adelante. Causa raíz común: la consistencia dependía de
+que el backend nuevo fuera el único escritor y de predicados distintos en cada consulta.
+
+| Hallazgo | Causa raíz | Solución |
+|---|---|---|
+| I-1 relleno concurrente | `ensure_item_tasks` y el relleno no compartían exclusión y no había identidad única de la tarea derivada | `legacy_mirror` + índice único parcial `uq_prep_tasks_legacy_mirror (order_item_id) WHERE legacy_mirror`; relleno, reparación y trigger insertan con `ON CONFLICT DO NOTHING`. Las tareas reales multiárea no son espejo y no se limitan |
+| I-2 escrituras antiguas | El relleno solo corría al arrancar; el tablero exige tarea | `order_items.tasks_managed` (false para escritores antiguos) + triggers: tarea espejo en `INSERT`, sincronía monótona en cambios de estado/cancelación. El backend nuevo inserta con `tasks_managed = true`. `0008` toma `LOCK … SHARE ROW EXCLUSIVE`, instala triggers y repite el relleno antes de confirmar, sin hueco |
+| I-3 entrega directa pagada | El predicado de «trabajo pendiente» exigía `requires_preparation` | `pending_work_exists()`: cualquier ítem `PENDING/PREPARING/READY`; lo usan pedidos activos y cierre de turno (los tableros siguen filtrando por tareas) |
+| I-4 mesa liberada | Ocupación y unicidad dependían solo del estado (`PAID` ⇒ libre) | `orders.occupies_table` derivado por trigger (estado + ítems sin entregar) para cualquier escritor; `/tables`, alta de pedido y el índice único `uq_orders_occupied_dine_in_table` usan la misma columna. Un segundo pedido es rechazado por la BD (409 `TABLE_ALREADY_OPEN`) |
+| I-5 pedido todo cancelado | `compute_status` devolvía `OPEN` sin ítems activos | Nuevo estado terminal `CANCELLED` (con ítems, todos cancelados, sin pagos): fija `closed_at`, audita `ORDER_CANCELLED`, libera mesa, no bloquea el turno, rechaza pagos/comandas (409 `ORDER_ALREADY_CANCELLED`) y no cuenta como atendido en reportes. Un pedido vacío sigue `OPEN`; `TOTAL_BELOW_PAID` impide que un pedido con pagos se cancele |
+| M-1 edición de cantidad/notas | `PATCH …/items/{id}` no publicaba eventos | Emite `order_item.updated` (áreas del plato + mesero + admin) y `order.updated` |
+
+Notas: `0008` no reescribe importes, pagos ni estados; si hubiera varios pedidos ocupando una misma mesa (datos previos),
+conserva como ocupante al más reciente en lugar de abortar el despliegue.
+
+### Procedimiento de despliegue coordinado
+
+1. Backup verificado y ensayo de `alembic upgrade head` sobre una copia restaurada (nunca sobre producción).
+2. Render ejecuta `alembic upgrade head` (0007 y 0008 en la misma transacción). Durante el solape, la instancia
+   anterior sigue escribiendo: los triggers le dan tarea espejo, ocupación de mesa y sincronía de estado, de modo que sus
+   comandas son visibles en los tableros nuevos. Aun así, **recomendado**: pausar el servicio anterior (o ventana sin
+   tráfico) y confirmar tras el arranque del nuevo: `SELECT count(*) FROM order_items oi WHERE requires_preparation AND
+   status IN ('PENDING','PREPARING','READY') AND NOT EXISTS (SELECT 1 FROM order_item_preparation_tasks t WHERE
+   t.order_item_id = oi.id)` = 0.
+3. Desplegar el frontend en la misma ventana; recargar la PWA.
+4. Riesgo residual: un bloqueo cruzado breve entre una transacción antigua y una nueva puede abortar una operación
+   (PostgreSQL detecta el deadlock; el cliente reintenta).
+

@@ -103,6 +103,8 @@ def register_payment(
         shift, locked_order = order_service.lock_order_and_shift(db, order.id, order.shift_id)
         if locked_order.status == OrderStatus.CLOSED:
             raise ConflictError("ORDER_ALREADY_CLOSED", "El pedido ya está cerrado.")
+        if locked_order.status == OrderStatus.CANCELLED:
+            raise ConflictError("ORDER_ALREADY_CANCELLED", "El pedido fue cancelado: no hay nada que cobrar.")
         order_service.ensure_shift_open(shift)
         pending = locked_order.total - locked_order.paid_amount
         if payload.amount > pending:

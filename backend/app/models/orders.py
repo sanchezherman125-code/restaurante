@@ -32,13 +32,12 @@ class Order(Base):
         CheckConstraint(
             "subtotal >= 0 AND total >= 0 AND paid_amount >= 0 AND paid_amount <= total", name="ck_order_money"
         ),
+        # ``occupies_table`` lo deriva un trigger (ver migración 0008): estado del pedido + platos sin entregar.
         Index(
-            "uq_orders_active_dine_in_table",
+            "uq_orders_occupied_dine_in_table",
             "table_id",
             unique=True,
-            postgresql_where=text(
-                "order_type = 'DINE_IN' AND status IN ('OPEN', 'IN_PREPARATION', 'READY', 'DELIVERED')"
-            ),
+            postgresql_where=text("order_type = 'DINE_IN' AND occupies_table"),
         ),
     )
 
@@ -54,6 +53,7 @@ class Order(Base):
     total: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0.00"))
     paid_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0.00"))
     opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    occupies_table: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
     paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -117,6 +117,8 @@ class OrderItem(Base):
     unit_price_snapshot: Mapped[Decimal] = mapped_column(Numeric(12, 2))
     quantity: Mapped[int] = mapped_column(Integer, default=1)
     requires_preparation: Mapped[bool] = mapped_column(Boolean, default=True)
+    # False solo para filas escritas por un backend anterior a las tareas: un trigger les da tarea espejo.
+    tasks_managed: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("false"))
     preparation_area: Mapped[str | None] = mapped_column(String(16), nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="PENDING", index=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)

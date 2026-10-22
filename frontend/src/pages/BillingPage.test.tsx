@@ -126,4 +126,12 @@ describe("cobro simplificado sin división de cuentas", () => {
     expect(screen.getByText("Pedido pagado")).toBeVisible();
     expect(screen.queryByRole("button", { name: /^Cobrar/ })).toBeNull();
   });
+
+  it("un pedido totalmente cancelado no se presenta como pagado ni ofrece cobrar", () => {
+    mocks.data = { ...mocks.data, status: "CANCELLED", total: "0.00", paid_amount: "0.00", pending_amount: "0.00", items: [] };
+    page();
+    expect(screen.getByText("Pedido cancelado")).toBeVisible();
+    expect(screen.queryByText("Pedido pagado")).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Cobrar/ })).toBeNull();
+  });
 });

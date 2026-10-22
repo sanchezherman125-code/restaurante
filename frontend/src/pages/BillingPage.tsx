@@ -25,6 +25,7 @@ const STATUS_LABEL: Record<string, string> = {
   DELIVERED: "Entregado",
   PAID: "Pagado",
   CLOSED: "Cerrado",
+  CANCELLED: "Cancelado",
 };
 
 export function BillingPage() {
@@ -180,6 +181,12 @@ export function BillingPage() {
             {busy ? "Registrando…" : `Cobrar ${money(pending)}`}
           </button>
           <p className="hint">El cobro requiere conexión. El pedido queda pagado al cubrir el total.</p>
+        </div>
+      ) : data.status === "CANCELLED" ? (
+        <div className="card center" style={{ flexDirection: "column", gap: 8 }}>
+          <div style={{ fontSize: 40 }}>🚫</div>
+          <strong>Pedido cancelado</strong>
+          <span className="hint">Todos los productos se cancelaron: no hay nada que cobrar.</span>
         </div>
       ) : (
         <div className="card center" style={{ flexDirection: "column", gap: 8 }}>

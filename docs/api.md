@@ -82,6 +82,9 @@ Roles: `Staff` = cualquier usuario autenticado; `Admin`; `Waiter`; `Kitchen`; `G
 `PAYMENT_EXCEEDS_PENDING`). `GET .../billing` devuelve ítems (sin `split_quantity`), totales,
 `pending_amount`, `payments` y `legacy_splits` (solo lectura, divisiones creadas antes del retiro).
 
+**Pedido cancelado.** Si se cancelan todos los productos (sin pagos) el pedido pasa a `CANCELLED`: libera la mesa,
+no bloquea el cierre de turno y rechaza pagos y comandas con 409 `ORDER_ALREADY_CANCELLED`.
+
 **Tareas de preparación.** Cada plato con preparación trae `tasks[]` (`id`, `name`, `area`,
 `status` `PENDING|PREPARING|READY|CANCELLED`, `expected_minutes`, `started_at`, `ready_at`). El
 endpoint de tarea acepta `PREPARING` o `READY` y solo avanza: repetir o retrasar un estado es una

@@ -1,4 +1,5 @@
 import { useUi } from "../stores/ui";
+import { Icon } from "./Icon";
 
 export function Toasts() {
   const toasts = useUi((state) => state.toasts);
@@ -13,7 +14,7 @@ export function Toasts() {
             {toast.message ? <div className="hint">{toast.message}</div> : null}
           </div>
           <button className="close" onClick={() => dismiss(toast.id)} aria-label="Cerrar">
-            ✕
+            <Icon name="x" />
           </button>
         </div>
       ))}

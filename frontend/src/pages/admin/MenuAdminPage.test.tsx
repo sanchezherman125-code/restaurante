@@ -78,7 +78,7 @@ describe("Preparación del producto", () => {
   it("edita un plato compartido: cambia el orden y elimina una tarea sin tocar el precio", async () => {
     const user = userEvent.setup();
     render(<MenuAdminPage />);
-    await user.click(screen.getByRole("button", { name: "Editar" }));
+    await user.click(screen.getByRole("button", { name: /^Editar/ }));
     const steps = screen.getByTestId("prep-steps");
     expect(within(steps).getAllByTestId("prep-step")).toHaveLength(2);
     await user.click(within(steps).getByRole("button", { name: "Bajar tarea 1" }));
@@ -98,7 +98,7 @@ describe("Preparación del producto", () => {
     setMenu([]);
     const user = userEvent.setup();
     render(<MenuAdminPage />);
-    await user.click(screen.getByRole("button", { name: "+ Producto" }));
+    await user.click(screen.getByRole("button", { name: "Nuevo producto" }));
     await user.type(screen.getAllByRole("textbox")[0], "Alitas con papas");
     await user.type(screen.getByRole("textbox", { name: "Nombre de la tarea 1" }), "Preparar alitas");
     await user.click(screen.getByRole("button", { name: "Parrilla" }));
@@ -123,7 +123,7 @@ describe("Preparación del producto", () => {
   it("no guarda una receta inválida y avisa por qué", async () => {
     const user = userEvent.setup();
     render(<MenuAdminPage />);
-    await user.click(screen.getByRole("button", { name: "Editar" }));
+    await user.click(screen.getByRole("button", { name: /^Editar/ }));
     await user.clear(screen.getByRole("textbox", { name: "Nombre de la tarea 2" }));
     await user.click(screen.getByRole("button", { name: "Guardar" }));
     expect(mocks.updateItem).not.toHaveBeenCalled();
@@ -134,7 +134,7 @@ describe("Preparación del producto", () => {
     setMenu([menuItem({ name: "Gaseosa", requires_preparation: false, preparation_area: null, preparation_steps: [] })]);
     const user = userEvent.setup();
     render(<MenuAdminPage />);
-    await user.click(screen.getByRole("button", { name: "Editar" }));
+    await user.click(screen.getByRole("button", { name: /^Editar/ }));
     expect(screen.queryByTestId("prep-steps")).toBeNull();
     await user.click(screen.getByRole("button", { name: "Guardar" }));
     const payload = mocks.updateItem.mock.calls[0][1];

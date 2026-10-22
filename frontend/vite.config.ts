@@ -19,10 +19,10 @@ export default defineConfig(({ mode }) => {
           name: "Restaurante — Gestión de Pedidos",
           short_name: "Restaurante",
           description: "Pedidos, cocina, parrilla y cobros en tiempo real",
-          theme_color: "#0c0d0f",
-          background_color: "#0c0d0f",
+          theme_color: "#121110",
+          background_color: "#121110",
           display: "standalone",
-          orientation: "portrait",
+          orientation: "any",
           start_url: "/",
           icons: [
             { src: "/icons/icon-192.png", sizes: "192x192", type: "image/png" },

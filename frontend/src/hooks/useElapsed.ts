@@ -26,6 +26,16 @@ export function useElapsed(since: string | null | undefined): number {
   return since ? seconds : 0;
 }
 
+/** Reloj compartido para ordenar por urgencia sin llamar a Date.now() durante el render. */
+export function useNow(intervalMs = 5000): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), intervalMs);
+    return () => window.clearInterval(timer);
+  }, [intervalMs]);
+  return now;
+}
+
 export function formatElapsed(totalSeconds: number): string {
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);

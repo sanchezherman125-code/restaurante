@@ -11,8 +11,9 @@ async function createContext(browser: Browser) {
 async function ensureSharedDish(page: Page) {
   await page.goto("/carta");
   await expect(page.getByRole("heading", { name: "Carta", exact: true })).toBeVisible();
+  await expect(page.getByText(/productos en \d+ categorías/)).toBeVisible(); // la lista ya cargó
   if ((await page.getByText("Alitas con papas").count()) > 0) return;
-  await page.getByRole("button", { name: "+ Producto", exact: true }).click();
+  await page.getByRole("button", { name: "Nuevo producto", exact: true }).click();
   const dialog = page.getByRole("dialog");
   await dialog.getByRole("combobox").selectOption({ label: "Fondos" });
   await dialog.locator(".field", { hasText: "Nombre" }).first().locator("input").fill("Alitas con papas");

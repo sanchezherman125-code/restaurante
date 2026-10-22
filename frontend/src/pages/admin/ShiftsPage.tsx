@@ -3,7 +3,8 @@ import { useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { shiftsApi } from "../../api/endpoints";
 import { ConfirmDialog } from "../../components/Modal";
-import { EmptyState, Spinner } from "../../components/Layout";
+import { Icon } from "../../components/Icon";
+import { EmptyState, PageHeader, SkeletonList, StatusBadge } from "../../components/Layout";
 import { errorMessage } from "../../lib/send";
 import { useUi } from "../../stores/ui";
 
@@ -43,7 +44,7 @@ export function ShiftsPage() {
       void queryClient.invalidateQueries({ queryKey: ["reports"] });
     } catch (error) {
       const message = errorMessage(error);
-      toast("error", "No se pudo cerrar el turno", message.includes("SHIFT_HAS_OPEN_ORDERS") ? "Hay pedidos sin finalizar o pagar." : message);
+      toast("error", "No se pudo cerrar el turno", message.includes("SHIFT_HAS_OPEN_ORDERS") ? "Hay pedidos sin cobrar o con productos por preparar o entregar." : message);
     } finally {
       setBusy(false);
       setConfirmClose(false);
@@ -51,14 +52,12 @@ export function ShiftsPage() {
   }
 
   return (
-    <div className="stack">
-      <div className="section-title" style={{ marginTop: 0 }}>
-        <h2>Turnos</h2>
-      </div>
+    <div className="page narrow">
+      <PageHeader title="Turnos" subtitle="Abra y cierre la jornada; el cierre genera el reporte del día" />
 
-      <div className="card">
+      <div className="card shift-card">
         {shift.isLoading ? (
-          <Spinner />
+          <SkeletonList rows={1} height={72} label="Cargando turno" />
         ) : current ? (
           <>
             <div className="row wrap">
@@ -68,7 +67,7 @@ export function ShiftsPage() {
                   Inicio: {new Date(current.opened_at).toLocaleString("es-PE")}
                 </div>
               </div>
-              <span className="chip open">abierto</span>
+              <StatusBadge label="Abierto" tone="ok" icon="check" />
             </div>
             <button
               className="btn danger block"
@@ -76,7 +75,7 @@ export function ShiftsPage() {
               onClick={() => setConfirmClose(true)}
               disabled={busy}
             >
-              Cerrar turno
+              <Icon name="shift" />Cerrar turno
             </button>
           </>
         ) : (
@@ -90,19 +89,19 @@ export function ShiftsPage() {
         )}
       </div>
 
-      <div className="section-title">
-        <h2>Historial</h2>
+      <div className="section-title" style={{ marginTop: "var(--s2)" }}>
+        <h2>Últimos turnos</h2>
         <button className="btn ghost small" onClick={() => navigate("/historial")}>
-          Ver reportes →
+          Ver historial<Icon name="chevronRight" />
         </button>
       </div>
 
       {history.isLoading ? (
-        <Spinner />
+        <SkeletonList rows={3} height={64} label="Cargando historial" />
       ) : (history.data ?? []).length === 0 ? (
-        <EmptyState icon="🗓️" title="Sin turnos cerrados" />
+        <EmptyState icon="shift" title="Aún no hay turnos cerrados" hint="Los turnos cerrados aparecen aquí con su reporte." />
       ) : (
-        (history.data ?? []).slice(0, 10).map((entry) => (
+        <div className="stack" style={{ gap: "var(--s2)" }}>{(history.data ?? []).slice(0, 10).map((entry) => (
           <div className="card" key={entry.id}>
             <div className="row wrap">
               <div className="grow">
@@ -120,13 +119,13 @@ export function ShiftsPage() {
               </button>
             </div>
           </div>
-        ))
+        ))}</div>
       )}
 
       {confirmClose && current ? (
         <ConfirmDialog
           title="Cerrar turno"
-          message="Se generará el reporte de ventas, productos, tiempos de preparación, gastos y lista de compras. Los pedidos deben estar pagados."
+          message="Se generará el reporte de ventas, productos, tiempos de preparación, gastos y lista de compras. Todos los pedidos deben estar cobrados y entregados."
           confirmLabel="Cerrar turno"
           danger
           onConfirm={() => void closeShift()}

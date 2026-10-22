@@ -2,9 +2,11 @@ import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { reportsApi, shiftsApi } from "../../api/endpoints";
+import { Icon } from "../../components/Icon";
 import { Modal } from "../../components/Modal";
-import { EmptyState, Spinner } from "../../components/Layout";
+import { EmptyState, Kpi, PageHeader, SkeletonList } from "../../components/Layout";
 import { money } from "../../hooks/useElapsed";
+import { AREA_NAME } from "../../lib/labels";
 import type { ShiftReport } from "../../types/api";
 
 function formatSeconds(seconds: number | null): string {
@@ -14,85 +16,59 @@ function formatSeconds(seconds: number | null): string {
   return `${min}m ${sec}s`;
 }
 
+function Section({ title, empty, children }: { title: string; empty?: string; children: React.ReactNode[] }) {
+  return (
+    <section className="report-section">
+      <h3>{title}</h3>
+      {children.length === 0 ? <div className="hint">{empty}</div> : children}
+    </section>
+  );
+}
+
 function ReportView({ report }: { report: ShiftReport }) {
   return (
     <div className="stack">
-      <div className="grid-2">
-        <div className="kpi">
-          <div className="label">Ventas</div>
-          <div className="value">{money(report.sales.total_sales)}</div>
-        </div>
-        <div className="kpi">
-          <div className="label">Neto</div>
-          <div className="value">{money(report.sales.net_result)}</div>
-        </div>
+      <div className="kpi-grid">
+        <Kpi label="Ventas" value={money(report.sales.total_sales)} tone="accent" />
+        <Kpi label="Gastos" value={money(report.sales.total_expenses)} />
+        <Kpi label="Neto" value={money(report.sales.net_result)} tone={Number(report.sales.net_result) < 0 ? "neg" : undefined} />
       </div>
+      <p className="hint">{report.sales.orders_count} pedidos · {report.sales.tables_served} mesas atendidas · {report.sales.persons_served} personas</p>
 
-      <table className="data">
-        <tbody>
-          <tr>
-            <td>Pedidos</td>
-            <td>{report.sales.orders_count}</td>
-          </tr>
-          <tr>
-            <td>Mesas atendidas</td>
-            <td>{report.sales.tables_served}</td>
-          </tr>
-          <tr>
-            <td>Personas</td>
-            <td>{report.sales.persons_served}</td>
-          </tr>
-          <tr>
-            <td>Gastos</td>
-            <td>{money(report.sales.total_expenses)}</td>
-          </tr>
-        </tbody>
-      </table>
-
-      <div>
-        <strong>Productos</strong>
+      <Section title="Productos vendidos" empty="No se vendieron productos.">
         {report.products.lines.map((line) => (
           <div className="item-row" key={line.name}>
             <span className="name">{line.name}</span>
             <span className="hint">×{line.quantity}</span>
-            <strong>{money(line.revenue)}</strong>
+            <strong className="num">{money(line.revenue)}</strong>
           </div>
         ))}
-      </div>
-
-      <div>
-        <strong>Preparación</strong>
+      </Section>
+      <Section title="Tiempos de preparación" empty="Sin mediciones.">
         {report.preparation.lines.map((line) => (
           <div className="item-row" key={line.area}>
-            <span className="name">{line.area}</span>
+            <span className="name">{AREA_NAME[line.area] ?? line.area}</span>
             <span className="hint">{line.items_measured} mediciones</span>
-            <strong>{formatSeconds(line.average_seconds)}</strong>
+            <strong className="num">{formatSeconds(line.average_seconds)}</strong>
           </div>
         ))}
-        {report.preparation.lines.length === 0 ? <div className="hint">Sin mediciones.</div> : null}
-      </div>
-
-      <div>
-        <strong>Gastos</strong>
+      </Section>
+      <Section title="Gastos" empty="Sin gastos.">
         {report.expenses.map((expense) => (
           <div className="item-row" key={expense.id}>
             <span className="name">{expense.description}</span>
-            <strong>{money(expense.amount)}</strong>
+            <strong className="num">{money(expense.amount)}</strong>
           </div>
         ))}
-        {report.expenses.length === 0 ? <div className="hint">Sin gastos.</div> : null}
-      </div>
-
-      <div>
-        <strong>Lista de compras</strong>
+      </Section>
+      <Section title="Lista de compras" empty="Sin pendientes de compra.">
         {report.purchase_list.map((item) => (
           <div className="item-row" key={item.id}>
             <span className="name">{item.description}</span>
-            <span className="hint">{item.area}</span>
+            <span className="hint">{AREA_NAME[item.area] ?? item.area}</span>
           </div>
         ))}
-        {report.purchase_list.length === 0 ? <div className="hint">Sin pendientes de compra.</div> : null}
-      </div>
+      </Section>
     </div>
   );
 }
@@ -114,47 +90,49 @@ export function HistoryPage() {
     else setSearchParams({}, { replace: true });
   }, [selected, setSearchParams]);
 
-  if (history.isLoading) return <Spinner label="Cargando historial…" />;
+  if (history.isLoading) return <div className="page"><PageHeader title="Historial de turnos" /><SkeletonList rows={5} height={56} label="Cargando historial" /></div>;
+
+  const time = (value: string) => new Date(value).toLocaleTimeString("es-PE", { hour: "2-digit", minute: "2-digit" });
+  const day = (value: string) => new Date(value).toLocaleDateString("es-PE", { weekday: "short", day: "2-digit", month: "short", year: "numeric" });
 
   return (
-    <div className="stack">
-      <div className="section-title" style={{ marginTop: 0 }}>
-        <h2>Historial de turnos</h2>
-        <span className="hint">{history.data?.length ?? 0} registros</span>
-      </div>
+    <div className="page">
+      <PageHeader title="Historial de turnos" subtitle={`${history.data?.length ?? 0} turnos cerrados`} />
 
       {(history.data ?? []).length === 0 ? (
-        <EmptyState icon="🗓️" title="No hay turnos cerrados" hint="Cierre un turno desde la pantalla de Turnos." />
+        <EmptyState icon="history" title="No hay turnos cerrados" hint="Cuando cierre un turno aparecerá aquí con su reporte completo."
+          action={undefined} />
       ) : (
-        (history.data ?? []).map((shift) => (
-          <div className="card" key={shift.id}>
-            <div className="row wrap">
-              <div className="grow">
-                <strong>{new Date(shift.opened_at).toLocaleString("es-PE")}</strong>
-                <div className="hint">
-                  {shift.closed_at ? `Cerrado: ${new Date(shift.closed_at).toLocaleString("es-PE")}` : "Sin cerrar"}
-                </div>
-                {shift.snapshot ? (
-                  <div className="hint">
-                    Ventas {money(String(shift.snapshot["total_sales"] ?? 0))} · Neto{" "}
-                    {money(String(shift.snapshot["net_result"] ?? 0))}
-                  </div>
-                ) : null}
-              </div>
-              <button className="btn small" onClick={() => setSelected(shift.id)}>
-                Ver reporte
-              </button>
-            </div>
-          </div>
-        ))
+        <div className="table-wrap">
+          <table className="data">
+            <thead>
+              <tr><th>Fecha</th><th>Horario</th><th className="num-col">Ventas</th><th className="num-col">Neto</th><th><span className="visually-hidden">Acciones</span></th></tr>
+            </thead>
+            <tbody>
+              {(history.data ?? []).map((shift) => (
+                <tr key={shift.id}>
+                  <td><strong>{day(shift.opened_at)}</strong></td>
+                  <td className="hint">{time(shift.opened_at)}{shift.closed_at ? ` – ${time(shift.closed_at)}` : " · sin cerrar"}</td>
+                  <td className="num-col num">{shift.snapshot ? money(String(shift.snapshot["total_sales"] ?? 0)) : "—"}</td>
+                  <td className="num-col num">{shift.snapshot ? money(String(shift.snapshot["net_result"] ?? 0)) : "—"}</td>
+                  <td className="num-col">
+                    <button className="btn small secondary" aria-label={`Ver reporte del ${day(shift.opened_at)}`} onClick={() => setSelected(shift.id)}>
+                      Ver reporte<Icon name="chevronRight" />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
 
       {selected ? (
-        <Modal title="Reporte de turno" onClose={() => setSelected(null)}>
+        <Modal title="Reporte de turno" className="wide" onClose={() => setSelected(null)}>
           {report.isLoading ? (
-            <Spinner />
+            <SkeletonList rows={3} height={72} label="Cargando reporte" />
           ) : report.isError || !report.data ? (
-            <div className="hint">No se pudo cargar el reporte.</div>
+            <div className="hint">No se pudo cargar el reporte. Verifique la conexión e intente de nuevo.</div>
           ) : (
             <ReportView report={report.data} />
           )}

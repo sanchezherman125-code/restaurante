@@ -85,12 +85,13 @@ describe("TableOrderPage", () => {
     expect(screen.getByRole("button", { name: /Ver comanda.*1 unidad/ })).toHaveTextContent("S/ 18.00");
 
     await user.click(screen.getByRole("button", { name: /Ver comanda.*1 unidad/ }));
-    expect(screen.getByRole("heading", { name: "Tu comanda" })).toBeInTheDocument();
-    expect(screen.getByText("Subtotal de la comanda")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Nueva comanda" })).toBeInTheDocument();
+    expect(screen.getByText("Subtotal")).toBeInTheDocument();
     expect(screen.getAllByText("S/ 18.00").length).toBeGreaterThan(0);
 
     await user.click(screen.getByTestId("send-command"));
-    expect(screen.getByRole("dialog")).toHaveTextContent("1 unidad en 1 productos");
+    expect(screen.getByRole("dialog")).toHaveTextContent("1× Causa limeña");
+    expect(screen.getByRole("dialog")).toHaveTextContent("S/ 18.00");
     expect(mocks.sendOrQueue).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole("button", { name: "Confirmar envío" }));

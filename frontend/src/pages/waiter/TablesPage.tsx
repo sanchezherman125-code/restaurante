@@ -2,8 +2,9 @@ import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { ordersApi, shiftsApi, tablesApi } from "../../api/endpoints";
+import { Icon } from "../../components/Icon";
 import { Modal } from "../../components/Modal";
-import { EmptyState, Spinner } from "../../components/Layout";
+import { EmptyState, PageHeader, SearchField, SkeletonList } from "../../components/Layout";
 import { errorMessage, sendOrQueue } from "../../lib/send";
 import { usePendingOrders } from "../../stores/pendingOrders";
 import { useUi } from "../../stores/ui";
@@ -12,61 +13,58 @@ import type { Order, RestaurantTable } from "../../types/api";
 
 type OperationalTableState = "FREE" | "OPEN" | "INACTIVE";
 
-function TableTile({
-  table,
-  pending,
-  state,
-  order,
-  onOpen,
-}: {
-  table: RestaurantTable;
-  pending: boolean;
-  state: OperationalTableState;
-  order?: Order;
-  onOpen: (tableId: string) => void;
+/** Resumen real del avance del pedido: lo que el mesero necesita saber sin abrir la mesa. */
+function orderProgress(order?: Order): { ready: number; preparing: number; pending: number } {
+  const items = (order?.items ?? []).filter((item) => item.status !== "CANCELLED" && item.status !== "DELIVERED");
+  return {
+    ready: items.filter((item) => item.status === "READY").length,
+    preparing: items.filter((item) => item.status === "PREPARING").length,
+    pending: items.filter((item) => item.status === "PENDING").length,
+  };
+}
+
+function TableTile({ table, pending, state, order, onOpen }: {
+  table: RestaurantTable; pending: boolean; state: OperationalTableState; order?: Order; onOpen: (tableId: string) => void;
 }) {
   const elapsed = useElapsed(order?.opened_at);
-  const contextualDetails = order
-    ? [order.opened_at ? formatElapsed(elapsed) : null, order.persons_count ? `${order.persons_count} pers.` : null, order.total ? money(order.total) : null]
-        .filter(Boolean)
-        .join(" · ")
-    : "Pedido abierto";
+  const progress = orderProgress(order);
+  const stateLabel = state === "INACTIVE" ? "inactiva" : state === "OPEN" ? "ocupada" : "libre";
+  const tone = pending ? "pending" : progress.ready > 0 ? "ready" : state.toLowerCase();
 
   return (
     <button
-      className={`table-tile ${state.toLowerCase()} ${pending ? "pending" : ""}`}
+      className={`table-tile ${tone}`}
+      data-state={state.toLowerCase()}
       onClick={() => onOpen(table.id)}
       disabled={state === "INACTIVE" || pending}
-      aria-label={`${table.name}, ${state === "INACTIVE" ? "inactiva" : state === "OPEN" ? "ocupada" : "libre"}${pending ? ", sincronización pendiente" : ""}`}
+      aria-label={`${table.name}, ${stateLabel}${progress.ready > 0 ? `, ${progress.ready} listo para entregar` : ""}${pending ? ", sincronización pendiente" : ""}`}
     >
-      <div className="table-card-topline">
-        <span className="table-card-kicker">MESA</span>
-        <div className="table-card-badges">
-          <span className={`table-card-state ${state.toLowerCase()}`}>
-            {state === "INACTIVE" ? "INACTIVA" : state === "OPEN" ? "OCUPADA" : "LIBRE"}
-          </span>
-          {pending ? <span className="table-sync-badge" aria-label="Sincronización pendiente" title="Sincronización pendiente">↻</span> : null}
-        </div>
-      </div>
-      <span className="table-card-number">{String(table.number).padStart(2, "0")}</span>
-      <span className="table-card-divider" />
-      <span className="table-card-footer">
-        <span className="table-card-copy">
-          <strong>{table.name}</strong>
-          <span>
-            {pending
-              ? "Guardado localmente · pendiente de sincronización"
-              : state === "INACTIVE"
-                ? "No disponible"
-                : state === "OPEN"
-                  ? contextualDetails
-                  : "Toca para abrir"}
-          </span>
-        </span>
-        <span className={`table-card-action ${state.toLowerCase()}`} aria-hidden="true">
-          {state === "OPEN" ? "◷" : state === "INACTIVE" || pending ? "·" : "→"}
-        </span>
+      <span className="table-top">
+        <span className="table-number num">{String(table.number).padStart(2, "0")}</span>
+        {pending ? <span className="chip warning"><Icon name="cloud" />Sin enviar</span>
+          : progress.ready > 0 ? <span className="chip success"><Icon name="check" />{progress.ready} listo{progress.ready > 1 ? "s" : ""}</span>
+          : state === "OPEN" ? <span className="chip ember"><Icon name="user" />Ocupada</span>
+          : state === "INACTIVE" ? <span className="chip"><Icon name="ban" />Inactiva</span>
+          : <span className="chip free"><Icon name="chair" />Libre</span>}
       </span>
+      <span className="table-name">{table.name}</span>
+      <span className="table-meta">
+        {pending ? "Guardada en este dispositivo, aún no llegó al servidor"
+          : state === "OPEN" && order ? (
+            <>
+              <span><Icon name="clock" />{formatElapsed(elapsed)}</span>
+              {order.persons_count ? <span><Icon name="users" />{order.persons_count}</span> : null}
+              <strong className="num">{money(order.total)}</strong>
+            </>
+          ) : state === "OPEN" ? "Pedido abierto"
+          : state === "INACTIVE" ? "No disponible" : "Toque para abrir"}
+      </span>
+      {state === "OPEN" && !pending && (progress.preparing > 0 || progress.pending > 0) ? (
+        <span className="table-progress">
+          {progress.preparing > 0 ? <span className="chip info"><Icon name="flame" />{progress.preparing} preparando</span> : null}
+          {progress.pending > 0 ? <span className="chip warning"><Icon name="hourglass" />{progress.pending} pendiente{progress.pending > 1 ? "s" : ""}</span> : null}
+        </span>
+      ) : null}
     </button>
   );
 }
@@ -114,12 +112,12 @@ export function TablesPage() {
     };
   }, [pendingRecords, tables.data]);
 
-  if (tables.isLoading) return <Spinner label="Cargando mesas…" />;
+  if (tables.isLoading) return <div className="page"><PageHeader title="Salón" /><SkeletonList rows={6} height={110} label="Cargando mesas" /></div>;
 
   if (tables.isError) {
     return (
       <EmptyState
-        icon="📡"
+        icon="wifiOff"
         title="No se pudo cargar el salón"
         hint="Verifique la conexión o intente de nuevo."
       />
@@ -186,63 +184,33 @@ export function TablesPage() {
     }
   }
 
+  const openTables = (tables.data ?? []).length;
   return (
-    <div className="waiter-page tables-page stack">
-      <div className="waiter-page-heading">
-        <div>
-          <span className={`shift-indicator ${currentShift.data ? "open" : ""}`}><span /> {currentShift.data ? "TURNO ABIERTO" : "OPERACIÓN / MESERO"}</span>
-          <h1>Salón</h1>
-          <p>Control de mesas en tiempo real</p>
-        </div>
-      </div>
+    <div className="page">
+      <PageHeader
+        title="Salón"
+        subtitle={currentShift.data ? "Turno abierto · estado de las mesas en tiempo real" : "No hay un turno abierto: pida a un administrador que lo abra"}
+        actions={<SearchField value={query} onChange={setQuery} label="Buscar mesa" placeholder="Buscar mesa" hotkey />}
+      />
 
-      <div className="table-summary" aria-label="Resumen de mesas">
-        <button className="table-summary-stat free" onClick={() => setFilter("FREE")} aria-pressed={filter === "FREE"}>
-          <strong>{String(summary.free).padStart(2, "0")}</strong>
-          <span>Libres</span>
-        </button>
-        <button className="table-summary-stat open" onClick={() => setFilter("OPEN")} aria-pressed={filter === "OPEN"}>
-          <strong>{String(summary.open).padStart(2, "0")}</strong>
-          <span>Ocupadas</span>
-        </button>
-        <button className="table-summary-stat pending" onClick={() => setFilter("PENDING")} aria-pressed={filter === "PENDING"}>
-          <strong>{String(summary.pending).padStart(2, "0")}</strong>
-          <span>Por enviar</span>
-        </button>
-      </div>
-
-      <div className="table-controls">
-        <div className="table-search-row">
-          <label className="visually-hidden" htmlFor="table-search">Buscar mesa</label>
-          <input
-            id="table-search"
-            className="input table-search"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Buscar mesa…"
-            type="search"
-          />
-          <span className="table-search-icon" aria-hidden="true">⌕</span>
-          <button className="table-filter-button" aria-label="Filtrar mesas" onClick={() => document.querySelector<HTMLButtonElement>(".table-filter-row button")?.focus()}>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M7 12h10m-7 5h4" /></svg>
-          </button>
-        </div>
-        <div className="table-section-heading">
-          <span>MESAS DEL SALÓN</span>
-          <span>{tables.data?.length ?? 0} en total</span>
-        </div>
-        <div className="table-filter-row" aria-label="Filtrar mesas">
+      <div className="table-filter-row" role="group" aria-label="Filtrar mesas">
+        <div className="segmented">
           {(["ALL", "FREE", "OPEN"] as const).map((state) => (
-            <button key={state} className={filter === state ? "active" : ""} onClick={() => setFilter(state)}>
-              <span>{{ ALL: "Todas", FREE: "Libres", OPEN: "Ocupadas" }[state]}</span>
-              <strong>{String(state === "ALL" ? (tables.data?.length ?? 0) : state === "FREE" ? summary.free : summary.open).padStart(2, "0")}</strong>
+            <button key={state} className={filter === state ? "active" : ""} aria-pressed={filter === state} onClick={() => setFilter(state)}>
+              {{ ALL: "Todas", FREE: "Libres", OPEN: "Ocupadas" }[state]}
+              <span className="count">{state === "ALL" ? openTables : state === "FREE" ? summary.free : summary.open}</span>
             </button>
           ))}
+          {summary.pending > 0 ? (
+            <button className={filter === "PENDING" ? "active" : ""} aria-pressed={filter === "PENDING"} onClick={() => setFilter("PENDING")}>
+              Por enviar<span className="count">{summary.pending}</span>
+            </button>
+          ) : null}
         </div>
       </div>
 
       {tables.data && tables.data.length === 0 ? (
-        <EmptyState icon="🪑" title="No hay mesas registradas" hint="Un administrador debe cargarlas." />
+        <EmptyState icon="chair" title="No hay mesas registradas" hint="Un administrador debe cargarlas en Mesas." />
       ) : (
         <div className="table-grid">
           {tableRows.map(({ table, pending, state }) => (
@@ -259,46 +227,35 @@ export function TablesPage() {
       )}
 
       {tableRows.length === 0 && tables.data && tables.data.length > 0 ? (
-        <EmptyState icon="⌕" title="No encontramos mesas" hint="Prueba con otro nombre, número o filtro." />
+        <EmptyState icon="search" title="No encontramos mesas" hint="Pruebe con otro nombre, número o filtro." />
       ) : null}
 
       {pendingTable ? (
         <Modal
           title={`Abrir ${tables.data?.find((t) => t.id === pendingTable)?.name ?? "mesa"}`}
-          eyebrow="NUEVA ATENCIÓN"
-          className="open-table-modal"
-          icon={
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M6 20v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2" />
-              <circle cx="12" cy="7" r="3" />
-              <path d="M4 20v-2a4 4 0 0 1 2-3.46M20 20v-2a4 4 0 0 0-2-3.46" />
-            </svg>
-          }
           onClose={() => setPendingTable(null)}
           footer={
             <>
-              <button className="btn secondary grow" onClick={() => setPendingTable(null)}>
-                Cancelar
-              </button>
-              <button className="btn grow open-table-confirm" onClick={() => void confirmCreate()} disabled={creating}>
-                {creating ? "Abriendo…" : <><span aria-hidden="true">→</span> Abrir mesa</>}
+              <button className="btn secondary grow" onClick={() => setPendingTable(null)}>Cancelar</button>
+              <button className="btn grow" onClick={() => void confirmCreate()} disabled={creating}>
+                {creating ? "Abriendo…" : "Abrir mesa"}
               </button>
             </>
           }
         >
-          <div className="open-table-panel">
-            <span className="eyebrow">CANTIDAD DE PERSONAS</span>
-            <p className="open-table-helper">Selecciona cuántos comensales atenderás.</p>
-            <div className="qty-stepper table-person-stepper">
-              <button type="button" aria-label="Reducir personas" onClick={() => setPersons((n) => Math.max(1, n - 1))}>
-                −
-              </button>
-              <span className="value">{String(persons).padStart(2, "0")} personas</span>
-              <button type="button" aria-label="Aumentar personas" onClick={() => setPersons((n) => Math.min(100, n + 1))}>
-                +
-              </button>
+          <div className="stack" style={{ gap: "var(--s3)" }}>
+            <div className="hint">¿Cuántas personas se sientan?</div>
+            <div className="qty-stepper table-person-stepper" style={{ alignSelf: "center" }}>
+              <button type="button" aria-label="Reducir personas" onClick={() => setPersons((n) => Math.max(1, n - 1))}>−</button>
+              <span className="value" style={{ minWidth: "7rem" }}>{persons} {persons === 1 ? "persona" : "personas"}</span>
+              <button type="button" aria-label="Aumentar personas" onClick={() => setPersons((n) => Math.min(100, n + 1))}>+</button>
             </div>
-            <p className="open-table-note">El pedido quedará vinculado a {tables.data?.find((table) => table.id === pendingTable)?.name ?? "la mesa"}.</p>
+            <div className="quick-numbers" role="group" aria-label="Cantidad rápida">
+              {[1, 2, 3, 4, 5, 6, 8, 10].map((n) => (
+                <button key={n} type="button" className={persons === n ? "active" : ""} aria-pressed={persons === n} onClick={() => setPersons(n)}>{n}</button>
+              ))}
+            </div>
+            <p className="hint">El pedido quedará vinculado a {tables.data?.find((table) => table.id === pendingTable)?.name ?? "la mesa"}.</p>
           </div>
         </Modal>
       ) : null}

@@ -1,92 +1,131 @@
 import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { menuApi, ordersApi, preparationApi } from "../api/endpoints";
+import { Icon } from "../components/Icon";
 import { ConfirmDialog, Modal } from "../components/Modal";
-import { EmptyState, Spinner } from "../components/Layout";
-import { formatElapsed, useElapsed, useLateItems } from "../hooks/useElapsed";
+import { EmptyState, PageHeader, SkeletonList } from "../components/Layout";
+import { formatElapsed, useElapsed, useNow } from "../hooks/useElapsed";
+import { AREA_NAME, TASK_STATUS } from "../lib/labels";
 import { errorMessage, sendOrQueue } from "../lib/send";
 import type { BoardTask, ItemGroup, MenuItem } from "../types/api";
 import { useSession } from "../stores/session";
 import { useUi } from "../stores/ui";
 
-const AREA_LABEL: Record<string, string> = { KITCHEN: "Cocina", GRILL: "Parrilla" };
-const AREA_SUMMARY: Record<string, string> = { PENDING: "pendiente", PREPARING: "preparando", READY: "listo", EMPTY: "sin tareas" };
+const AREA_LABEL = AREA_NAME;
 
-const TASK_LABEL: Record<string, string> = {
-  PENDING: "pendiente",
-  PREPARING: "preparando",
-  READY: "listo",
-  CANCELLED: "cancelado",
-};
+/** Calor de la tarea: avance contra el tiempo estimado. Comunica urgencia con barra, número y texto. */
+function heat(elapsed: number, expectedMinutes: number | null, open: boolean): { ratio: number; level: "ok" | "warn" | "late" | "none" } {
+  const expected = (expectedMinutes ?? 0) * 60;
+  if (!open || expected <= 0) return { ratio: 0, level: "none" };
+  const ratio = elapsed / expected;
+  return { ratio: Math.min(1, ratio), level: ratio > 1 ? "late" : ratio > 0.8 ? "warn" : "ok" };
+}
 
-function TaskLine({
-  task,
-  updating,
-  onStatus,
-  onCancel,
-}: {
-  task: BoardTask;
-  updating: boolean;
-  onStatus: (task: BoardTask, status: string) => void;
-  onCancel: (task: BoardTask) => void;
+function TaskLine({ task, updating, onStatus, onCancel }: {
+  task: BoardTask; updating: boolean; onStatus: (task: BoardTask, status: string) => void; onCancel: (task: BoardTask) => void;
 }) {
   const elapsed = useElapsed(task.started_at ?? task.created_at);
-  const expected = (task.expected_minutes ?? 0) * 60;
   const open = task.status === "PENDING" || task.status === "PREPARING";
-  const late = expected > 0 && elapsed > expected && open;
-  const warn = expected > 0 && elapsed > expected * 0.8 && !late && open;
+  const h = heat(elapsed, task.expected_minutes, open);
+  const status = TASK_STATUS[task.status];
   const waitingFor = task.status === "READY" && task.item_status !== "READY" && task.item_status !== "DELIVERED"
     ? task.other_tasks.filter((other) => other.status !== "READY")
     : [];
 
   return (
-    <div className="item-row" data-testid="prep-task" data-task={task.name}>
-      <span className="qty">×{task.quantity}</span>
-      <div className="name">
-        <div style={{ fontWeight: 700 }}>{task.name}</div>
-        {task.item_name !== task.name ? <div className="hint">{task.item_name}</div> : null}
-        {task.notes ? <div className="hint">📝 {task.notes}</div> : null}
-        {task.replacement_description ? <div className="hint">🔁 {task.replacement_description}</div> : null}
-        <div className="row wrap" style={{ marginTop: 6 }}>
-          <span className={`timer ${late ? "late" : warn ? "warn" : ""}`}>{formatElapsed(elapsed)}</span>
-          {expected > 0 ? <span className="hint">/ {task.expected_minutes} min</span> : null}
-          <span className={`chip ${task.status === "PREPARING" ? "info" : task.status === "READY" ? "success" : "warning"}`}>
-            {TASK_LABEL[task.status] ?? task.status}
-          </span>
+    <div className={`task ${task.status.toLowerCase()}`} data-testid="prep-task" data-task={task.name}>
+      <div className="task-main">
+        <span className="task-qty num">×{task.quantity}</span>
+        <div className="grow">
+          <div className="task-name">{task.name}</div>
+          {task.item_name !== task.name ? <div className="hint">{task.item_name}</div> : null}
+          {task.notes ? <div className="task-note"><Icon name="note" />{task.notes}</div> : null}
+          {task.replacement_description ? <div className="task-note"><Icon name="refresh" />{task.replacement_description}</div> : null}
         </div>
-        {task.other_tasks.length > 0 ? (
-          <div className="row wrap" style={{ marginTop: 6 }}>
-            {task.other_tasks.map((other) => (
-              <span key={other.id} className={`chip ${other.status === "READY" ? "success" : ""}`}>
-                {AREA_LABEL[other.area] ?? other.area}: {TASK_LABEL[other.status] ?? other.status}
-              </span>
-            ))}
-          </div>
-        ) : null}
-        {waitingFor.length > 0 ? (
-          <div className="hint" style={{ marginTop: 4 }}>
-            Esperando a {[...new Set(waitingFor.map((other) => AREA_LABEL[other.area] ?? other.area))].join(" y ")}
-          </div>
-        ) : null}
-        <div className="row wrap" style={{ marginTop: 8 }}>
-          {task.status === "PENDING" ? (
-            <button className="btn small" disabled={updating} onClick={() => onStatus(task, "PREPARING")}>
-              ▶ Empezar
-            </button>
-          ) : null}
-          {task.status === "PREPARING" ? (
-            <button className="btn success small" disabled={updating} onClick={() => onStatus(task, "READY")}>
-              ✓ Listo
-            </button>
-          ) : null}
-          {task.item_status === "PENDING" || task.item_status === "PREPARING" ? (
-            <button className="btn ghost small" disabled={updating} onClick={() => onCancel(task)}>
-              Cancelar plato
-            </button>
-          ) : null}
+        <span className={`chip ${status.tone === "run" ? "info" : status.tone === "ok" ? "success" : "warning"}`}>
+          <Icon name={status.icon} />{status.label.toLowerCase()}
+        </span>
+      </div>
+
+      {open ? (
+        <div className="heat" data-level={h.level}>
+          <div className="heat-bar" aria-hidden="true"><span style={{ width: `${Math.round(h.ratio * 100)}%` }} /></div>
+          <span className={`timer ${h.level === "late" ? "late" : h.level === "warn" ? "warn" : ""}`}>{formatElapsed(elapsed)}</span>
+          {task.expected_minutes ? <span className="hint">de {task.expected_minutes} min{h.level === "late" ? " · atrasado" : ""}</span> : null}
         </div>
+      ) : null}
+
+      {task.other_tasks.length > 0 ? (
+        <div className="row wrap" style={{ gap: "var(--s2)" }}>
+          {task.other_tasks.map((other) => (
+            <span key={other.id} className={`chip ${other.status === "READY" ? "success" : other.status === "PREPARING" ? "info" : ""}`}>
+              <Icon name={TASK_STATUS[other.status].icon} />{AREA_LABEL[other.area] ?? other.area}: {TASK_STATUS[other.status].label.toLowerCase()}
+            </span>
+          ))}
+        </div>
+      ) : null}
+      {waitingFor.length > 0 ? (
+        <div className="waiting-note">
+          <Icon name="hourglass" />Su parte está lista. Esperando a {[...new Set(waitingFor.map((other) => AREA_LABEL[other.area] ?? other.area))].join(" y ")}
+        </div>
+      ) : null}
+
+      <div className="task-actions">
+        {task.status === "PENDING" ? (
+          <button className="btn large grow" disabled={updating} onClick={() => onStatus(task, "PREPARING")}><Icon name="play" />Empezar</button>
+        ) : null}
+        {task.status === "PREPARING" ? (
+          <button className="btn success large grow" disabled={updating} onClick={() => onStatus(task, "READY")}><Icon name="check" />Listo</button>
+        ) : null}
+        {task.item_status === "PENDING" || task.item_status === "PREPARING" ? (
+          <button className="btn ghost small" disabled={updating} onClick={() => onCancel(task)}>Cancelar plato</button>
+        ) : null}
       </div>
     </div>
+  );
+}
+
+function groupTone(group: ItemGroup, now: number): "late" | "running" | "ready" | "waiting" {
+  const live = group.tasks;
+  const late = live.some((task) => {
+    const expected = (task.expected_minutes ?? 0) * 60;
+    const started = new Date(task.started_at ?? task.created_at).getTime();
+    return expected > 0 && (task.status === "PENDING" || task.status === "PREPARING") && (now - started) / 1000 > expected;
+  });
+  if (late) return "late";
+  if (live.every((task) => task.status === "READY")) return "ready";
+  if (live.some((task) => task.status === "PREPARING")) return "running";
+  return "waiting";
+}
+
+function GroupCard({ group, tone, onStatus, onCancel, updatingTasks }: {
+  group: ItemGroup; tone: "late" | "running" | "ready" | "waiting";
+  onStatus: (task: BoardTask, status: string) => void; onCancel: (task: BoardTask) => void; updatingTasks: Record<string, string>;
+}) {
+  const elapsed = useElapsed(group.created_at);
+  return (
+    <article className="ticket-card board-ticket" data-testid="prep-card" data-table={group.table_name ?? ""} data-tone={tone}>
+      <div className="ticket-head">
+        <strong>{group.table_name ?? (group.order_type === "TAKEAWAY" ? "Para llevar" : "Pedido")}</strong>
+        <span className="chip">Comanda {group.sequence_number}</span>
+        {group.persons_count ? <span className="chip"><Icon name="users" />{group.persons_count}</span> : null}
+        <span className="grow" />
+        <span className={`timer ${tone === "late" ? "late" : ""}`} title="Tiempo desde que llegó la comanda">{formatElapsed(elapsed)}</span>
+      </div>
+      <div className="ticket-body">
+        {group.notes ? <div className="task-note"><Icon name="note" />{group.notes}</div> : null}
+        {group.command_notes ? <div className="task-note"><Icon name="note" />{group.command_notes}</div> : null}
+        {group.tasks.map((task) => (
+          <TaskLine
+            key={task.id}
+            task={task}
+            updating={Boolean(updatingTasks[task.id] && updatingTasks[task.id] !== task.status)}
+            onStatus={onStatus}
+            onCancel={onCancel}
+          />
+        ))}
+      </div>
+    </article>
   );
 }
 
@@ -158,32 +197,55 @@ function Board({ area }: { area: string }) {
     }
   }
 
-  if (groups.isLoading) return <Spinner label={`Cargando ${AREA_LABEL[area].toLowerCase()}…`} />;
+  const now = useNow(5000);
+  const data = useMemo(() => {
+    const rows = groups.data ?? [];
+    // Prioridad operativa: atrasadas primero, luego en curso, luego pendientes, y por último las que solo esperan a otra área.
+    const rank = { late: 0, running: 1, waiting: 2, ready: 3 } as const;
+    return rows
+      .map((group) => ({ group, tone: groupTone(group, now) }))
+      .sort((a, b) => rank[a.tone] - rank[b.tone] || a.group.created_at.localeCompare(b.group.created_at));
+  }, [groups.data, now]);
 
-  const data = groups.data ?? [];
+  const totals = useMemo(() => {
+    const tasks = (groups.data ?? []).flatMap((group) => group.tasks);
+    return {
+      pending: tasks.filter((task) => task.status === "PENDING").length,
+      preparing: tasks.filter((task) => task.status === "PREPARING").length,
+      ready: tasks.filter((task) => task.status === "READY").length,
+    };
+  }, [groups.data]);
+
+  if (groups.isLoading) return <div className="board"><PageHeader title={`${AREA_LABEL[area]} · comandas`} /><SkeletonList rows={3} height={180} label="Cargando comandas" /></div>;
 
   return (
-    <div className="stack">
-      <div className="section-title" style={{ marginTop: 0 }}>
-        <h2>{AREA_LABEL[area]} · comandas</h2>
-        <div className="row">
-          <button className="btn ghost small" onClick={() => setSoldOutOpen(true)}>
-            🚫 Agotados
-          </button>
-          <button className="btn secondary small" onClick={() => void groups.refetch()}>
-            ↻
-          </button>
-        </div>
-      </div>
+    <div className="board">
+      <PageHeader
+        title={`${AREA_LABEL[area]} · comandas`}
+        subtitle={
+          <span className="board-totals" role="status">
+            <span className="chip warning"><Icon name="hourglass" />{totals.pending} {totals.pending === 1 ? "pendiente" : "pendientes"}</span>
+            <span className="chip info"><Icon name="flame" />{totals.preparing} preparando</span>
+            <span className="chip success"><Icon name="check" />{totals.ready} {totals.ready === 1 ? "lista" : "listas"}</span>
+          </span>
+        }
+        actions={
+          <>
+            <button className="btn ghost small" onClick={() => setSoldOutOpen(true)}><Icon name="ban" />Agotados</button>
+            <button className="btn secondary small" onClick={() => void groups.refetch()} aria-label="Actualizar comandas"><Icon name="refresh" /></button>
+          </>
+        }
+      />
 
       {data.length === 0 ? (
-        <EmptyState icon="✅" title="No hay comandas pendientes" hint="Las nuevas comandas aparecerán solas." />
+        <EmptyState icon="check" title="No hay comandas pendientes" hint="Las nuevas comandas aparecerán solas, con aviso." />
       ) : (
-        <div className="grid-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))" }}>
-          {data.map((group: ItemGroup) => (
+        <div className="board-grid">
+          {data.map(({ group, tone }) => (
             <GroupCard
               key={group.command_id}
               group={group}
+              tone={tone}
               onStatus={(task, status) => void changeStatus(task, status)}
               onCancel={(task) => setCancelTarget(task)}
               updatingTasks={updatingTasks}
@@ -206,67 +268,6 @@ function Board({ area }: { area: string }) {
       ) : null}
 
       {soldOutOpen ? <SoldOutModal area={area} onClose={() => setSoldOutOpen(false)} /> : null}
-    </div>
-  );
-}
-
-function GroupCard({
-  group,
-  onStatus,
-  onCancel,
-  updatingTasks,
-}: {
-  group: ItemGroup;
-  onStatus: (task: BoardTask, status: string) => void;
-  onCancel: (task: BoardTask) => void;
-  updatingTasks: Record<string, string>;
-}) {
-  const elapsed = useElapsed(group.created_at);
-  const latenessInput = useMemo(
-    () =>
-      group.tasks.map((task) => ({
-        id: task.id,
-        expectedMinutes: task.expected_minutes,
-        startedAt: task.started_at,
-        createdAt: task.created_at,
-        status: task.status,
-      })),
-    [group.tasks],
-  );
-  const lateIds = useLateItems(latenessInput);
-  const anyLate = lateIds.size > 0;
-  const allReady = group.tasks.every((task) => task.status === "READY" || task.status === "CANCELLED");
-
-  return (
-    <div className="ticket-card" data-testid="prep-card" data-table={group.table_name ?? ""} style={{ margin: 0 }}>
-      <div className="ticket-head">
-        <strong>{group.table_name ?? (group.order_type === "TAKEAWAY" ? "Para llevar" : "Pedido")}</strong>
-        <span className="chip">#{group.sequence_number}</span>
-        <span className="grow" />
-        <span className={`timer ${anyLate ? "late" : ""}`}>{formatElapsed(elapsed)}</span>
-      </div>
-      <div className="ticket-body">
-        <div className="row wrap" style={{ margin: "6px 0" }}>
-          {group.persons_count ? <span className="chip">{group.persons_count} pers.</span> : null}
-          <span className={`chip ${allReady ? "success" : "info"}`}>{allReady ? "lista" : "en curso"}</span>
-          {Object.entries(group.other_areas ?? {}).map(([areaName, status]) => (
-            <span key={areaName} className="chip">
-              {AREA_LABEL[areaName] ?? areaName}: {AREA_SUMMARY[status] ?? status}
-            </span>
-          ))}
-        </div>
-        {group.notes ? <div className="hint">🗒️ {group.notes}</div> : null}
-        {group.command_notes ? <div className="hint">📝 {group.command_notes}</div> : null}
-        {group.tasks.map((task) => (
-          <TaskLine
-            key={task.id}
-            task={task}
-            updating={Boolean(updatingTasks[task.id] && updatingTasks[task.id] !== task.status)}
-            onStatus={onStatus}
-            onCancel={onCancel}
-          />
-        ))}
-      </div>
     </div>
   );
 }
@@ -327,14 +328,14 @@ export function BoardPage() {
   const area = role === "GRILL" ? "GRILL" : role === "KITCHEN" ? "KITCHEN" : adminArea;
 
   return (
-    <div>
+    <div className="page wide" style={{ gap: "var(--s4)" }}>
       {role === "ADMIN" ? (
-        <div className="segmented" style={{ marginBottom: 14 }}>
-          <button className={area === "KITCHEN" ? "active" : ""} onClick={() => setAdminArea("KITCHEN")}>
-            👨‍🍳 Cocina
+        <div className="segmented" role="group" aria-label="Área de preparación" style={{ alignSelf: "flex-start" }}>
+          <button className={area === "KITCHEN" ? "active" : ""} aria-pressed={area === "KITCHEN"} onClick={() => setAdminArea("KITCHEN")}>
+            <Icon name="kitchen" />Cocina
           </button>
-          <button className={area === "GRILL" ? "active" : ""} onClick={() => setAdminArea("GRILL")}>
-            🔥 Parrilla
+          <button className={area === "GRILL" ? "active" : ""} aria-pressed={area === "GRILL"} onClick={() => setAdminArea("GRILL")}>
+            <Icon name="flame" />Parrilla
           </button>
         </div>
       ) : null}

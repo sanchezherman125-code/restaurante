@@ -2,7 +2,8 @@ import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { menuApi } from "../../api/endpoints";
 import { Modal } from "../../components/Modal";
-import { EmptyState, Spinner } from "../../components/Layout";
+import { Icon } from "../../components/Icon";
+import { EmptyState, PageHeader, SearchField, SkeletonList } from "../../components/Layout";
 import { errorMessage } from "../../lib/send";
 import { money } from "../../hooks/useElapsed";
 import { useUi } from "../../stores/ui";
@@ -84,6 +85,9 @@ export function MenuAdminPage() {
   const [categoryName, setCategoryName] = useState("");
   const [categoryOpen, setCategoryOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [search, setSearch] = useState("");
+  const [categoryFilter, setCategoryFilter] = useState<string>("ALL");
+  const [availability, setAvailability] = useState<"ALL" | "AVAILABLE" | "SOLD_OUT">("ALL");
 
   const menu = useQuery({ queryKey: ["menu"], queryFn: menuApi.get, retry: false });
 
@@ -183,91 +187,110 @@ export function MenuAdminPage() {
     }
   }
 
-  if (menu.isLoading) return <Spinner label="Cargando carta…" />;
+  if (menu.isLoading) return <div className="page"><PageHeader title="Carta" /><SkeletonList rows={6} height={64} label="Cargando carta" /></div>;
 
   const categories = menu.data?.categories ?? [];
   const items = menu.data?.items ?? [];
+  const q = search.trim().toLocaleLowerCase("es-PE");
+  const shown = items
+    .filter((item) => (q ? true : categoryFilter === "ALL" || item.category_id === categoryFilter))
+    .filter((item) => !q || `${item.name} ${item.description ?? ""}`.toLocaleLowerCase("es-PE").includes(q))
+    .filter((item) => availability === "ALL" || (availability === "SOLD_OUT" ? item.availability_status === "SOLD_OUT" : item.availability_status !== "SOLD_OUT"))
+    .sort((a, b) => a.name.localeCompare(b.name, "es-PE"));
+  const selectedCategory = categories.find((category) => category.id === categoryFilter);
+  const soldOutCount = items.filter((item) => item.availability_status === "SOLD_OUT").length;
+  const newItem = () => setItemForm({
+    category_id: selectedCategory?.id ?? categories[0]?.id ?? "", name: "", description: "", price: "",
+    requires_preparation: true, steps: [blankStep()], is_active: true,
+  });
 
   return (
-    <div className="stack">
-      <div className="section-title" style={{ marginTop: 0 }}>
-        <h2>Carta</h2>
-        <div className="row">
-          <button className="btn ghost small" onClick={() => setCategoryOpen(true)}>
-            + Categoría
-          </button>
-          <button
-            className="btn small"
-            onClick={() =>
-              setItemForm({
-                category_id: categories[0]?.id ?? "",
-                name: "",
-                description: "",
-                price: "",
-                requires_preparation: true,
-                steps: [blankStep()],
-                is_active: true,
-              })
-            }
-            disabled={categories.length === 0}
-          >
-            + Producto
-          </button>
-        </div>
-      </div>
+    <div className="page">
+      <PageHeader
+        title="Carta"
+        subtitle={`${items.length} productos en ${categories.length} categorías${soldOutCount ? ` · ${soldOutCount} agotados` : ""}`}
+        actions={
+          <>
+            <SearchField value={search} onChange={setSearch} label="Buscar producto" placeholder="Buscar producto" hotkey />
+            <button className="btn ghost" onClick={() => setCategoryOpen(true)}><Icon name="plus" />Nueva categoría</button>
+            <button className="btn" onClick={newItem} disabled={categories.length === 0}><Icon name="plus" />Nuevo producto</button>
+          </>
+        }
+      />
 
       {categories.length === 0 ? (
-        <EmptyState icon="🍽️" title="Sin categorías" hint="Cree una categoría para empezar." />
+        <EmptyState icon="menu" title="Sin categorías" hint="Cree una categoría para empezar a cargar productos."
+          action={<button className="btn" onClick={() => setCategoryOpen(true)}><Icon name="plus" />Nueva categoría</button>} />
       ) : (
-        categories.map((category) => (
-          <div className="card" key={category.id}>
-            <div className="row wrap">
-              <strong className="grow">{category.name}</strong>
-              <span className={`chip ${category.is_active ? "open" : "danger"}`}>
-                {category.is_active ? "visible" : "oculta"}
-              </span>
-              <button className="btn ghost small" onClick={() => void toggleCategory(category)}>
-                {category.is_active ? "Ocultar" : "Mostrar"}
+        <div className="menu-admin">
+          <nav className="category-rail" aria-label="Categorías">
+            {([{ id: "ALL", name: "Todas", is_active: true, count: items.length }, ...categories.map((category) => ({ ...category, count: items.filter((item) => item.category_id === category.id).length }))]).map((category) => (
+              <button key={category.id} className={`${categoryFilter === category.id ? "active" : ""} ${category.is_active ? "" : "muted"}`}
+                aria-pressed={categoryFilter === category.id} onClick={() => setCategoryFilter(category.id)}>
+                <span className="grow" style={{ textAlign: "left" }}>{category.name}</span>
+                {!category.is_active ? <Icon name="ban" /> : null}
+                <span className="count">{category.count}</span>
               </button>
+            ))}
+          </nav>
+
+          <section className="menu-list" aria-label="Productos">
+            <div className="row wrap">
+              <div className="segmented" role="group" aria-label="Disponibilidad">
+                {([["ALL", "Todos"], ["AVAILABLE", "Disponibles"], ["SOLD_OUT", "Agotados"]] as const).map(([key, label]) => (
+                  <button key={key} className={availability === key ? "active" : ""} aria-pressed={availability === key} onClick={() => setAvailability(key)}>{label}</button>
+                ))}
+              </div>
+              <span className="grow" />
+              {selectedCategory ? (
+                <button className="btn ghost small" onClick={() => void toggleCategory(selectedCategory)}>
+                  {selectedCategory.is_active ? "Ocultar categoría" : "Mostrar categoría"}
+                </button>
+              ) : null}
             </div>
 
-            {items
-              .filter((item) => item.category_id === category.id)
-              .map((item) => (
-                <div className="item-row" key={item.id}>
-                  <div className="name">
-                    <div style={{ fontWeight: 700 }}>{item.name}</div>
-                    <div className="hint">
-                      {money(item.price)} · {describeSteps(item)}
+            {shown.length === 0 ? (
+              <EmptyState icon="search" title={q ? "Ningún producto coincide" : "No hay productos aquí"} hint={q ? "Pruebe con otro nombre." : "Use «Nuevo producto» para agregar el primero."} />
+            ) : (
+              <ul className="product-rows">
+                {shown.map((item) => (
+                  <li className={`product-row ${item.is_active ? "" : "inactive"}`} key={item.id}>
+                    <div className="grow">
+                      <div className="product-name">{item.name}{!item.is_active ? <span className="chip" style={{ marginLeft: 8 }}>Inactivo</span> : null}</div>
+                      <div className="hint">{describeSteps(item)}{q ? ` · ${categories.find((category) => category.id === item.category_id)?.name ?? ""}` : ""}</div>
                     </div>
-                  </div>
-                  <button
-                    className={`btn small ${item.availability_status === "SOLD_OUT" ? "warning" : "secondary"}`}
-                    onClick={() => void toggleAvailability(item)}
-                  >
-                    {item.availability_status === "SOLD_OUT" ? "Agotado" : "Disponible"}
-                  </button>
-                  <button
-                    className="btn small secondary"
-                    onClick={() =>
-                      setItemForm({
-                        id: item.id,
-                        category_id: item.category_id,
-                        name: item.name,
-                        description: item.description ?? "",
-                        price: String(item.price),
-                        requires_preparation: item.requires_preparation,
-                        steps: stepsFromItem(item),
-                        is_active: item.is_active,
-                      })
-                    }
-                  >
-                    Editar
-                  </button>
-                </div>
-              ))}
-          </div>
-        ))
+                    <span className="num product-price">{money(item.price)}</span>
+                    <button
+                      className={`btn small ${item.availability_status === "SOLD_OUT" ? "warning" : "secondary"}`}
+                      onClick={() => void toggleAvailability(item)}
+                      aria-label={`${item.name}: ${item.availability_status === "SOLD_OUT" ? "agotado, marcar disponible" : "disponible, marcar agotado"}`}
+                    >
+                      {item.availability_status === "SOLD_OUT" ? "Agotado" : "Disponible"}
+                    </button>
+                    <button
+                      className="btn small secondary"
+                      aria-label={`Editar ${item.name}`}
+                      onClick={() =>
+                        setItemForm({
+                          id: item.id,
+                          category_id: item.category_id,
+                          name: item.name,
+                          description: item.description ?? "",
+                          price: String(item.price),
+                          requires_preparation: item.requires_preparation,
+                          steps: stepsFromItem(item),
+                          is_active: item.is_active,
+                        })
+                      }
+                    >
+                      <Icon name="edit" />Editar
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        </div>
       )}
 
       {categoryOpen ? (
@@ -297,6 +320,7 @@ export function MenuAdminPage() {
       {itemForm ? (
         <Modal
           title={itemForm.id ? "Editar producto" : "Nuevo producto"}
+          className="wide"
           onClose={() => setItemForm(null)}
           footer={
             <>
@@ -310,8 +334,8 @@ export function MenuAdminPage() {
           }
         >
           <div className="field">
-            <label className="label">Categoría</label>
-            <select
+            <label className="label" htmlFor="pf-category">Categoría</label>
+            <select id="pf-category"
               className="select"
               value={itemForm.category_id}
               onChange={(event) => setItemForm({ ...itemForm, category_id: event.target.value })}
@@ -324,24 +348,24 @@ export function MenuAdminPage() {
             </select>
           </div>
           <div className="field">
-            <label className="label">Nombre</label>
-            <input
+            <label className="label" htmlFor="pf-name">Nombre</label>
+            <input id="pf-name"
               className="input"
               value={itemForm.name}
               onChange={(event) => setItemForm({ ...itemForm, name: event.target.value })}
             />
           </div>
           <div className="field">
-            <label className="label">Descripción</label>
-            <textarea
+            <label className="label" htmlFor="pf-desc">Descripción</label>
+            <textarea id="pf-desc"
               className="textarea"
               value={itemForm.description}
               onChange={(event) => setItemForm({ ...itemForm, description: event.target.value })}
             />
           </div>
           <div className="field">
-            <label className="label">Precio (S/)</label>
-            <input
+            <label className="label" htmlFor="pf-price">Precio (S/)</label>
+            <input id="pf-price"
               className="input"
               inputMode="decimal"
               value={itemForm.price}

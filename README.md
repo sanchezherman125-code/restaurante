@@ -15,6 +15,8 @@ página son exclusivamente de desarrollo/pruebas.
 
 Notificaciones: [diagnóstico, configuración VAPID y matriz física](./docs/notifications.md).
 
+Rediseño UX/UI «Brasa» (auditoría, sistema de diseño, capturas): [docs/UX_REDISENO_V2.md](./docs/UX_REDISENO_V2.md).
+
 Cobros simplificados y platos con preparación en varias áreas: [diseño, despliegue y guía de usuario](./docs/PREPARACION_MULTIAREA_Y_COBROS.md).
 
 ---

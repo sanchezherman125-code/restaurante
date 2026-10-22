@@ -1,6 +1,7 @@
 import { queueCounts, useQueue } from "../stores/queue";
 import { useState } from "react";
 import { ConfirmDialog, Modal } from "./Modal";
+import { Icon } from "./Icon";
 
 export function SyncIndicator() {
   const [showErrors, setShowErrors] = useState(false);
@@ -14,10 +15,11 @@ export function SyncIndicator() {
     return (
       <>
       <button data-testid="sync-indicator" className="sync-pill error" onClick={() => setShowErrors(true)} title="Hay operaciones con error de sincronización">
-        ⚠ {counts.SYNC_ERROR} con error
+        <Icon name="alert" /> {counts.SYNC_ERROR} con error
       </button>
-      {showErrors ? <Modal title="Pendientes de sincronización" onClose={() => setShowErrors(false)}>
+      {showErrors ? <Modal title="Operaciones que no se pudieron enviar" onClose={() => setShowErrors(false)}>
         <div className="stack">
+          <p className="hint">Estas operaciones siguen guardadas solo en este dispositivo: el servidor no las recibió.</p>
           {operations.filter((op) => op.status === "SYNC_ERROR").map((op) => (
             <div className="card" key={op.client_operation_id}>
               <p>{op.last_error ?? "No se pudo sincronizar la operación."}</p>
@@ -45,17 +47,17 @@ export function SyncIndicator() {
         data-testid="sync-indicator"
         className="sync-pill pending"
         onClick={() => void flush()}
-        title="Operaciones pendientes de sincronizar"
+        title="Guardadas solo en este dispositivo hasta recuperar la conexión. Toque para reintentar."
         disabled={flushing}
       >
-        {flushing ? "↻" : "☁"} {counts.LOCAL_PENDING + counts.SENDING} por enviar
+        <Icon name={flushing ? "refresh" : "cloud"} className={flushing ? "spin" : undefined} /> {counts.LOCAL_PENDING + counts.SENDING} por enviar
       </button>
     );
   }
   if (counts.SYNCED > 0) {
     return (
       <button data-testid="sync-indicator" className="sync-pill ok" onClick={() => void useQueue.getState().clearSynced()} title="Sincronizado — toque para limpiar">
-        ✓ sincronizado
+        <Icon name="check" /> sincronizado
       </button>
     );
   }

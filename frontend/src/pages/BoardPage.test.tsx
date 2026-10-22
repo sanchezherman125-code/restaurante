@@ -72,7 +72,7 @@ describe("tablero de preparación por tareas", () => {
     expect(within(card).getByText("Alitas con papas")).toBeVisible();
     expect(within(card).queryByText("Preparar alitas")).toBeNull();
     expect(within(card).getAllByText(/Parrilla: pendiente/).length).toBeGreaterThan(0);
-    expect(within(card).getByText("/ 7 min")).toBeVisible();
+    expect(within(card).getByText(/de 7 min/)).toBeVisible();
   });
 
   it("parrilla muestra solo su tarea y que cocina ya terminó", () => {
@@ -144,5 +144,30 @@ describe("tablero de preparación por tareas", () => {
     expect(screen.getByRole("button", { name: /Cocina/ })).toBeVisible();
     await user.click(screen.getByRole("button", { name: /Parrilla/ }));
     expect(screen.getByRole("heading", { name: /Parrilla · comandas/ })).toBeVisible();
+  });
+
+  it("ordena por urgencia: la comanda atrasada va primero aunque llegara después", () => {
+    setRole("KITCHEN");
+    const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
+    const fresh = group([task({ id: "t-fresh", created_at: minutesAgo(1), expected_minutes: 20 })]);
+    fresh.command_id = "cmd-fresh"; fresh.table_name = "Mesa 2"; fresh.created_at = minutesAgo(1);
+    const late = group([task({ id: "t-late", status: "PREPARING", started_at: minutesAgo(30), created_at: minutesAgo(31), expected_minutes: 10, item_status: "PREPARING" })]);
+    late.command_id = "cmd-late"; late.table_name = "Mesa 9"; late.created_at = minutesAgo(31);
+    mocks.groups = [fresh, late];
+    render(<BoardPage />);
+    const cards = screen.getAllByTestId("prep-card");
+    expect(cards.map((card) => card.getAttribute("data-table"))).toEqual(["Mesa 9", "Mesa 2"]);
+    expect(cards[0]).toHaveAttribute("data-tone", "late");
+    expect(within(cards[0]).getByText(/atrasado/)).toBeVisible();
+  });
+
+  it("muestra el total de tareas por estado en el encabezado", () => {
+    setRole("GRILL");
+    mocks.groups = [group([task({ status: "PENDING" }), task({ id: "b", status: "PREPARING" }), task({ id: "c", status: "READY" })])];
+    render(<BoardPage />);
+    const totals = screen.getByRole("status");
+    expect(totals).toHaveTextContent("1 pendiente");
+    expect(totals).toHaveTextContent("1 preparando");
+    expect(totals).toHaveTextContent("1 lista");
   });
 });

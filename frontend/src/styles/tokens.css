@@ -1,0 +1,99 @@
+/* Brasa — sistema de diseño de Restaurante V2.
+   Superficies de carbón cálido, un único acento (brasa) y estados que nunca dependen solo del color. */
+@import "@fontsource-variable/bricolage-grotesque/wght.css";
+@import "@fontsource-variable/instrument-sans/wght.css";
+
+:root {
+  /* Superficies */
+  --bg: #121110;
+  --sunk: #0d0c0b;
+  --panel: #1b1a18;
+  --raised: #252320;
+  --hover: #2d2a26;
+  --line: rgba(255, 238, 214, 0.1);
+  --line-strong: rgba(255, 238, 214, 0.2);
+
+  /* Texto (contraste AA sobre --panel) */
+  --ink: #f3eee6;
+  --ink-dim: #aaa297;
+  --ink-faint: #968e82;
+
+  /* Acento */
+  --ember: #ff7a1a;
+  --ember-hi: #ff9446;
+  --ember-lo: #c4570c;
+  --on-ember: #1a0c02;
+  --ember-tint: color-mix(in srgb, var(--ember) 14%, transparent);
+
+  /* Estados operativos */
+  --ok: #46d9a4;
+  --run: #70b8ff;
+  --wait: #f3bb4c;
+  --bad: #ff6f62;
+  --ok-tint: color-mix(in srgb, var(--ok) 15%, transparent);
+  --run-tint: color-mix(in srgb, var(--run) 15%, transparent);
+  --wait-tint: color-mix(in srgb, var(--wait) 15%, transparent);
+  --bad-tint: color-mix(in srgb, var(--bad) 15%, transparent);
+
+  /* Compatibilidad con nombres anteriores usados en pantallas */
+  --text: var(--ink);
+  --text-dim: var(--ink-dim);
+  --surface: var(--panel);
+  --surface-2: var(--raised);
+  --surface-3: var(--hover);
+  --border: var(--line);
+  --border-strong: var(--line-strong);
+  --primary: var(--ember);
+  --success: var(--ok);
+  --warning: var(--wait);
+  --danger: var(--bad);
+  --info: var(--run);
+
+  /* Tipografía */
+  --font-ui: "Instrument Sans Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-display: "Bricolage Grotesque Variable", "Instrument Sans Variable", ui-sans-serif, system-ui, sans-serif;
+  --fs-xs: 0.75rem;
+  --fs-sm: 0.8125rem;
+  --fs-base: 0.9375rem;
+  --fs-md: 1.0625rem;
+  --fs-lg: 1.25rem;
+  --fs-xl: 1.625rem;
+  --fs-2xl: 2.25rem;
+  --fs-display: 3.25rem;
+
+  /* Espaciado (base 4px) */
+  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 20px; --s6: 24px; --s8: 32px; --s10: 40px; --s12: 48px;
+
+  /* Formas */
+  --r-ctl: 10px;
+  --r-panel: 14px;
+  --r-ticket: 10px;
+  --r-pill: 999px;
+
+  /* Elevación: solo para elementos flotantes */
+  --shadow-float: 0 18px 48px rgba(0, 0, 0, 0.5), 0 0 0 1px var(--line-strong);
+
+  /* Medidas */
+  --hit: 44px;
+  --sidebar: 15rem;
+  --topbar: 3.5rem;
+  --bottom-nav: 4.25rem;
+
+  /* Movimiento */
+  --dur-fast: 110ms;
+  --dur: 180ms;
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+
+  font-family: var(--font-ui);
+  color-scheme: dark;
+}
+
+/* Entradas de puntero fino (mouse) permiten densidad mayor; el táctil conserva 44px. */
+@media (pointer: fine) and (min-width: 900px) {
+  :root { --hit: 38px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --dur-fast: 0ms; --dur: 0ms; }
+  *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; scroll-behavior: auto !important; }
+}

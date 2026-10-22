@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { disablePushNotifications, enablePushNotifications, hasPushSubscription, supportsWebPush } from "../notifications/push";
+import { Modal } from "./Modal";
 import { unlockNotificationAudio, playNotificationSound, useUi, vibrateNotification } from "../stores/ui";
 
 export function NotificationSettings({ userId, onClose }: { userId: string; onClose: () => void }) {
@@ -43,42 +44,39 @@ export function NotificationSettings({ userId, onClose }: { userId: string; onCl
   };
 
   return (
-    <div className="notification-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <section className="notification-panel" role="dialog" aria-modal="true" aria-labelledby="notification-settings-title">
-        <div className="notification-panel-heading">
-          <div><strong id="notification-settings-title">Notificaciones</strong><p>Preferencias de este usuario y dispositivo</p></div>
-          <button type="button" className="close" aria-label="Cerrar ajustes de notificaciones" onClick={onClose}>✕</button>
-        </div>
-        <label className="notification-setting">
-          <span><strong>Sonido</strong><small>Avisos con tonos distintos según el evento</small></span>
-          <input type="checkbox" checked={soundEnabled} onChange={() => void toggleSound()} />
+    <Modal title="Notificaciones" onClose={onClose}>
+      <p className="hint" style={{ marginTop: "calc(var(--s2) * -1)", marginBottom: "var(--s3)" }}>Preferencias de este usuario y de este dispositivo.</p>
+      <div className="settings-list">
+        <label className="setting">
+          <span><strong>Sonido</strong><small>Tonos distintos según el evento</small></span>
+          <input className="switch" type="checkbox" role="switch" checked={soundEnabled} onChange={() => void toggleSound()} />
         </label>
-        <label className="notification-setting volume-setting">
+        <label className="setting">
           <span><strong>Volumen</strong><small>{Math.round(volume * 100)}%</small></span>
           <input aria-label="Volumen de notificaciones" type="range" min="0" max="1" step="0.05" value={volume}
             onChange={(event) => updatePreferences(userId, { volume: Number(event.target.value) })} />
         </label>
-        <button className="btn secondary block notification-test" onClick={async () => {
+        <button className="btn secondary block" onClick={async () => {
           if (await unlockNotificationAudio()) playNotificationSound("command");
           else setPushStatus("El audio se desbloquea al probarlo en una interacción directa del usuario.");
         }}>Probar sonido</button>
-        <label className="notification-setting">
-          <span><strong>Vibración</strong><small>Si el dispositivo y navegador la admiten</small></span>
-          <input type="checkbox" checked={vibrationEnabled} onChange={(event) => {
+        <label className="setting">
+          <span><strong>Vibración</strong><small>Si el dispositivo y el navegador la admiten</small></span>
+          <input className="switch" type="checkbox" role="switch" checked={vibrationEnabled} onChange={(event) => {
             updatePreferences(userId, { vibrationEnabled: event.target.checked });
             if (event.target.checked) vibrateNotification([70, 50, 70]);
           }} />
         </label>
-        <div className="notification-setting push-setting">
+        <div className="setting">
           <span><strong>Avisos del sistema</strong><small>{supportsWebPush() ? "Para recibir avisos con la app en segundo plano" : "No disponible en este navegador"}</small></span>
-          <button className={`btn ${pushEnabled ? "secondary" : "primary"}`} disabled={!supportsWebPush()} onClick={() => void togglePush()}>
+          <button className={`btn small ${pushEnabled ? "secondary" : ""}`} disabled={!supportsWebPush()} onClick={() => void togglePush()}>
             {pushEnabled ? "Desactivar" : "Activar"}
           </button>
         </div>
-        {pushStatus ? <p className="notification-status" role="status">{pushStatus}</p> : null}
-        {typeof Notification !== "undefined" && Notification.permission === "denied" ?
-          <p className="notification-status">El permiso está bloqueado por el navegador; la app no puede volver a solicitarlo automáticamente.</p> : null}
-      </section>
-    </div>
+      </div>
+      {pushStatus ? <p className="hint" role="status" style={{ marginTop: "var(--s3)" }}>{pushStatus}</p> : null}
+      {typeof Notification !== "undefined" && Notification.permission === "denied" ?
+        <p className="hint" style={{ marginTop: "var(--s3)" }}>El permiso está bloqueado por el navegador; la app no puede volver a solicitarlo automáticamente.</p> : null}
+    </Modal>
   );
 }

@@ -1,0 +1,39 @@
+* { box-sizing: border-box; }
+
+html, body, #root { min-height: 100%; height: 100%; margin: 0; background: var(--bg); color: var(--ink); }
+body { -webkit-font-smoothing: antialiased; overscroll-behavior: none; font-size: var(--fs-base); line-height: 1.45; font-feature-settings: "tnum" 1, "cv11" 1; }
+
+button, input, select, textarea { font: inherit; color: inherit; }
+button { -webkit-tap-highlight-color: transparent; }
+button:not(:disabled) { cursor: pointer; }
+button:disabled { cursor: not-allowed; }
+h1, h2, h3, h4, p { margin: 0; }
+h1, h2, h3 { font-family: var(--font-display); letter-spacing: -0.02em; line-height: 1.15; font-weight: 650; }
+h1 { font-size: var(--fs-xl); }
+h2 { font-size: var(--fs-lg); }
+h3 { font-size: var(--fs-md); }
+a { color: inherit; text-decoration: none; }
+
+:focus-visible { outline: 2px solid var(--ember-hi); outline-offset: 2px; border-radius: 6px; }
+::selection { background: color-mix(in srgb, var(--ember) 40%, transparent); }
+
+.visually-hidden { position: absolute !important; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.skip-link { position: absolute; left: var(--s3); top: -4rem; z-index: 100; background: var(--ember); color: var(--on-ember); padding: var(--s2) var(--s4); border-radius: var(--r-ctl); font-weight: 650; }
+.skip-link:focus { top: var(--s3); }
+
+/* Utilidades de composición */
+.stack { display: flex; flex-direction: column; gap: var(--s4); }
+.row { display: flex; align-items: center; gap: var(--s3); }
+.row.wrap { flex-wrap: wrap; }
+.grow { flex: 1; min-width: 0; }
+.spacer { flex: 1; }
+.center { display: flex; align-items: center; justify-content: center; }
+.hint { color: var(--ink-dim); font-size: var(--fs-sm); }
+.num { font-family: var(--font-display); font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+.grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s3); }
+.grid-3 { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(18rem, 100%), 1fr)); gap: var(--s3); }
+.error-text { color: var(--bad); font-size: var(--fs-sm); }
+.spinner { width: 26px; height: 26px; border-radius: 50%; border: 3px solid var(--line-strong); border-top-color: var(--ember); animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+@media (max-width: 479px) { .grid-2.keep { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

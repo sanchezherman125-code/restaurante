@@ -1,15 +1,23 @@
 import { useNavigate } from "react-router-dom";
+import { Icon, type IconName } from "../../components/Icon";
+import { PageHeader } from "../../components/Layout";
 import { useSession } from "../../stores/session";
 
-const LINKS: { to: string; icon: string; label: string; hint: string }[] = [
-  { to: "/turnos", icon: "🗓️", label: "Turnos", hint: "Abrir o cerrar turno" },
-  { to: "/historial", icon: "📚", label: "Historial", hint: "Reportes por turno" },
-  { to: "/carta", icon: "🍽️", label: "Carta", hint: "Productos, precios y categorías" },
-  { to: "/admin/mesas", icon: "🪑", label: "Mesas", hint: "Alta y edición de mesas" },
-  { to: "/usuarios", icon: "👥", label: "Usuarios", hint: "Personal, roles y PIN" },
-  { to: "/gastos", icon: "💸", label: "Gastos", hint: "Gastos del turno" },
-  { to: "/compras", icon: "🛒", label: "Compras", hint: "Lista de compras" },
-  { to: "/pedidos", icon: "🧾", label: "Pedidos", hint: "Ver pedidos activos" },
+const GROUPS: { title: string; links: { to: string; icon: IconName; label: string; hint: string }[] }[] = [
+  { title: "Operación", links: [
+    { to: "/pedidos", icon: "orders", label: "Pedidos", hint: "Pedidos activos y cobros" },
+    { to: "/compras", icon: "purchases", label: "Compras", hint: "Lista de compras del equipo" },
+    { to: "/gastos", icon: "money", label: "Gastos", hint: "Gastos del turno" },
+  ] },
+  { title: "Carta y local", links: [
+    { to: "/carta", icon: "menu", label: "Carta", hint: "Productos, precios y preparación" },
+    { to: "/admin/mesas", icon: "chair", label: "Mesas", hint: "Alta y edición de mesas" },
+    { to: "/usuarios", icon: "users", label: "Usuarios", hint: "Personal, roles y PIN" },
+  ] },
+  { title: "Dinero", links: [
+    { to: "/turnos", icon: "shift", label: "Turnos", hint: "Abrir o cerrar el turno" },
+    { to: "/historial", icon: "history", label: "Historial", hint: "Reportes de turnos cerrados" },
+  ] },
 ];
 
 export function MorePage() {
@@ -17,30 +25,24 @@ export function MorePage() {
   const logout = useSession((state) => state.logout);
 
   return (
-    <div className="stack">
-      <div className="section-title" style={{ marginTop: 0 }}>
-        <h2>Más</h2>
-      </div>
-
-      {LINKS.map((link) => (
-        <button
-          key={link.to}
-          className="card row"
-          style={{ cursor: "pointer", textAlign: "left", width: "100%" }}
-          onClick={() => navigate(link.to)}
-        >
-          <span style={{ fontSize: 24 }}>{link.icon}</span>
-          <span className="grow">
-            <strong>{link.label}</strong>
-            <div className="hint">{link.hint}</div>
-          </span>
-          <span className="hint">→</span>
-        </button>
+    <div className="page narrow">
+      <PageHeader title="Más" subtitle="Todo lo demás de la administración" />
+      {GROUPS.map((group) => (
+        <section key={group.title} className="stack" style={{ gap: "var(--s2)" }}>
+          <h2 className="group-title">{group.title}</h2>
+          {group.links.map((link) => (
+            <button key={link.to} className="card interactive row" onClick={() => navigate(link.to)}>
+              <span className="more-icon"><Icon name={link.icon} /></span>
+              <span className="grow">
+                <strong>{link.label}</strong>
+                <div className="hint">{link.hint}</div>
+              </span>
+              <Icon name="chevronRight" />
+            </button>
+          ))}
+        </section>
       ))}
-
-      <button className="btn danger block" onClick={() => void logout()}>
-        Cerrar sesión
-      </button>
+      <button className="btn danger block" onClick={() => void logout()}><Icon name="logout" />Cerrar sesión</button>
     </div>
   );
 }

@@ -7,7 +7,7 @@ export async function login(page: Page, username: string, pin = "1234"): Promise
     await page.getByRole("button", { name: key, exact: true }).click();
   }
   await page.getByRole("button", { name: "Ingresar", exact: true }).click();
-  await expect(page.locator(".bottom-nav")).toBeVisible({ timeout: 20_000 });
+  await expect(page.locator(".app-main")).toBeVisible({ timeout: 20_000 });
 }
 
 export async function ensureShiftOpen(page: Page): Promise<void> {

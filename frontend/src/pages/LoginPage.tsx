@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ApiError } from "../api/client";
+import { Icon } from "../components/Icon";
 import { useSession } from "../stores/session";
 
 const KEYS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "⌫", "0", "OK"];
@@ -45,50 +46,73 @@ export function LoginPage() {
 
   return (
     <div className="login-page">
-      <div className="logo"><img className="login-mark" src="/favicon.png" alt="" />Restaurante</div>
-      <div className="subtitle">Tu operación, servida en tiempo real</div>
+      <aside className="login-brand" aria-hidden="true">
+        <span className="brand-mark"><Icon name="flame" /></span>
+        <div className="login-statement">
+          <strong>Restaurante</strong>
+          <span>Salón, cocina, parrilla y caja en un mismo pase.</span>
+        </div>
+      </aside>
 
-      <form
-        onSubmit={(event) => {
-          event.preventDefault();
-          void submit();
-        }}
-      >
-        <div className="field">
-          <label className="label" htmlFor="username">
-            Usuario
-          </label>
-          <input
-            id="username"
-            className="input"
-            value={username}
-            autoCapitalize="none"
-            autoComplete="username"
-            onChange={(event) => setUsername(event.target.value)}
-            placeholder="mesero1"
-          />
+      <main className="login-panel">
+        <div className="login-head">
+          <span className="brand-mark small"><Icon name="flame" /></span>
+          <h1>Ingresar</h1>
+          <p className="hint">Use su usuario y su PIN.</p>
         </div>
 
-        <div className="field">
-          <label className="label">PIN</label>
-          <div className="pin-display">{pin ? "•".repeat(pin.length) : "—"}</div>
-        </div>
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            void submit();
+          }}
+        >
+          <div className="field">
+            <label className="label" htmlFor="username">Usuario</label>
+            <input
+              id="username"
+              className="input"
+              value={username}
+              autoCapitalize="none"
+              autoComplete="username"
+              autoFocus={typeof window !== "undefined" && window.matchMedia("(pointer: fine)").matches}
+              onChange={(event) => setUsername(event.target.value)}
+              placeholder="mesero1"
+            />
+          </div>
 
-        <div className="pin-pad" style={{ marginBottom: 16 }}>
-          {KEYS.map((key) => (
-            <button type="button" key={key} onClick={() => press(key)}>
-              {key}
-            </button>
-          ))}
-        </div>
+          <div className="field">
+            <label className="label" htmlFor="pin">PIN</label>
+            <input
+              id="pin"
+              className="input pin-input"
+              type="password"
+              inputMode="numeric"
+              autoComplete="current-password"
+              maxLength={10}
+              value={pin}
+              onChange={(event) => setPin(event.target.value.replace(/\D/g, ""))}
+              aria-describedby="pin-help"
+              placeholder="••••"
+            />
+            <span id="pin-help" className="hint">4 a 10 dígitos. Puede escribirlo o usar el teclado numérico.</span>
+          </div>
 
-        {error ? <div className="error-text" style={{ textAlign: "center", marginBottom: 10 }}>{error}</div> : null}
+          <div className="pin-pad" role="group" aria-label="Teclado numérico">
+            {KEYS.map((key) => (
+              <button type="button" key={key} onClick={() => press(key)} aria-label={key === "⌫" ? "Borrar último dígito" : undefined}>
+                {key}
+              </button>
+            ))}
+          </div>
 
-        <button className="btn block" type="submit" disabled={loading}>
-          {loading ? "Ingresando…" : "Ingresar"}
-        </button>
-      </form>
+          {error ? <div className="error-text login-error" role="alert">{error}</div> : null}
 
+          <button className="btn block large" type="submit" disabled={loading}>
+            {loading ? "Ingresando…" : "Ingresar"}
+          </button>
+        </form>
+      </main>
     </div>
   );
 }

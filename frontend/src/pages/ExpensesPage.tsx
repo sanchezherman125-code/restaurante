@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { expensesApi, openReceipt, uploadReceipt } from "../api/endpoints";
-import { Spinner, EmptyState } from "../components/Layout";
+import { Icon } from "../components/Icon";
+import { EmptyState, PageHeader, SkeletonList } from "../components/Layout";
 import { money } from "../hooks/useElapsed";
 import { errorMessage, sendOrQueue } from "../lib/send";
 import { useUi } from "../stores/ui";
@@ -61,93 +62,70 @@ export function ExpensesPage() {
   const total = (expenses.data ?? []).reduce((sum, expense) => sum + Number(expense.amount), 0);
 
   return (
-    <div className="stack">
-      <div className="section-title" style={{ marginTop: 0 }}>
-        <h2>Gastos del turno</h2>
-        <span className="chip danger">{money(total)}</span>
-      </div>
+    <div className="page">
+      <PageHeader title="Gastos del turno" subtitle={`${(expenses.data ?? []).length} registrados`}
+        actions={<span className="chip danger" aria-label={`Total de gastos ${money(total)}`}>Total {money(total)}</span>} />
 
-      <div className="card">
-        <div className="field">
-          <label className="label">Monto (S/)</label>
-          <input
-            className="input"
-            inputMode="decimal"
-            value={amount}
-            onChange={(event) => setAmount(event.target.value)}
-            placeholder="0.00"
-          />
-        </div>
-        <div className="field">
-          <label className="label">Descripción</label>
-          <input
-            className="input"
-            value={description}
-            onChange={(event) => setDescription(event.target.value)}
-            placeholder="Ej. compra de limón"
-          />
-        </div>
-        <div className="field">
-          <label className="label">Comprobante (opcional)</label>
-          <input
-            className="input"
-            type="file"
-            accept="image/*,application/pdf"
-            onChange={(event) => setFile(event.target.files?.[0] ?? null)}
-          />
-        </div>
-        <button className="btn block" onClick={() => void submit()} disabled={saving}>
-          {saving ? "Guardando…" : "Registrar gasto"}
-        </button>
-        <p className="hint" style={{ marginBottom: 0 }}>
-          Sin conexión el gasto se guarda localmente y se sincroniza al reconectar.
-        </p>
-      </div>
+      <div className="two-col expenses-layout">
+        <form className="card" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+          <div className="section-title"><h2>Nuevo gasto</h2></div>
+          <div className="field">
+            <label className="label" htmlFor="expense-amount">Monto (S/)</label>
+            <input id="expense-amount" className="input" inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="0.00" />
+          </div>
+          <div className="field">
+            <label className="label" htmlFor="expense-desc">Descripción</label>
+            <input id="expense-desc" className="input" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Ej. compra de limón" />
+          </div>
+          <div className="field">
+            <label className="label" htmlFor="expense-file">Comprobante (opcional)</label>
+            <input id="expense-file" className="input" type="file" accept="image/*,application/pdf" onChange={(event) => setFile(event.target.files?.[0] ?? null)} />
+          </div>
+          <button className="btn block" type="submit" disabled={saving}>{saving ? "Guardando…" : "Registrar gasto"}</button>
+          <p className="hint" style={{ margin: "var(--s3) 0 0" }}>
+            Sin conexión, el gasto queda guardado solo en este dispositivo y se envía al reconectar.
+          </p>
+        </form>
 
-      {expenses.isLoading ? (
-        <Spinner />
-      ) : expenses.isError ? (
-        <EmptyState icon="📡" title="No se pudo cargar el historial de gastos" />
-      ) : (expenses.data ?? []).length === 0 ? (
-        <EmptyState icon="💸" title="Sin gastos en este turno" />
-      ) : (
-        <div className="card">
-          <table className="data">
-            <thead>
-              <tr>
-                <th>Descripción</th>
-                <th>Monto</th>
-                <th>Comprobante</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(expenses.data ?? []).map((expense) => (
-                <tr key={expense.id}>
-                  <td>
-                    <div>{expense.description}</div>
-                    <div className="hint">
-                      {new Date(expense.created_at).toLocaleString("es-PE", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}
-                      {expense.created_by_name ? ` · ${expense.created_by_name}` : ""}
-                    </div>
-                  </td>
-                  <td>{money(expense.amount)}</td>
-                  <td>
-                    {expense.receipt_url ? (
-                      <button className="chip info" onClick={() => void openReceipt(expense.receipt_url!).catch(
-                        (error) => toast("error", "No se pudo abrir el comprobante", errorMessage(error)),
-                      )}>
-                        ver
-                      </button>
-                    ) : (
-                      <span className="hint">—</span>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+        <section aria-label="Gastos registrados">
+          {expenses.isLoading ? (
+            <SkeletonList rows={3} height={56} label="Cargando gastos" />
+          ) : expenses.isError ? (
+            <EmptyState icon="wifiOff" title="No se pudo cargar el historial de gastos" hint="Verifique la conexión e intente de nuevo." />
+          ) : (expenses.data ?? []).length === 0 ? (
+            <EmptyState icon="money" title="Aún no hay gastos en este turno" hint="Registre compras o pagos menores para que el resultado neto sea real." />
+          ) : (
+            <div className="table-wrap">
+              <table className="data">
+                <thead><tr><th>Descripción</th><th className="num-col">Monto</th><th>Comprobante</th></tr></thead>
+                <tbody>
+                  {(expenses.data ?? []).map((expense) => (
+                    <tr key={expense.id}>
+                      <td>
+                        <div>{expense.description}</div>
+                        <div className="hint">
+                          {new Date(expense.created_at).toLocaleString("es-PE", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}
+                          {expense.created_by_name ? ` · ${expense.created_by_name}` : ""}
+                        </div>
+                      </td>
+                      <td className="num-col num">{money(expense.amount)}</td>
+                      <td>
+                        {expense.receipt_url ? (
+                          <button className="chip info" onClick={() => void openReceipt(expense.receipt_url!).catch(
+                            (error) => toast("error", "No se pudo abrir el comprobante", errorMessage(error)),
+                          )}>
+                            <Icon name="receipt" />Ver
+                          </button>
+                        ) : <span className="hint">—</span>}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      </div>
     </div>
   );
 }

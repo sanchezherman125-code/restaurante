@@ -2,7 +2,9 @@ import { useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { billingApi } from "../api/endpoints";
-import { EmptyState, Spinner } from "../components/Layout";
+import { Icon } from "../components/Icon";
+import { EmptyState, PageHeader, SkeletonList, StatusBadge } from "../components/Layout";
+import { ORDER_STATUS } from "../lib/labels";
 import { money } from "../hooks/useElapsed";
 import { ApiError, NetworkError } from "../api/client";
 import { errorMessage } from "../lib/send";
@@ -17,16 +19,6 @@ const METHODS: { value: PaymentMethod; label: string }[] = [
   { value: "CARD", label: "Tarjeta" },
   { value: "OTHER", label: "Otro" },
 ];
-
-const STATUS_LABEL: Record<string, string> = {
-  OPEN: "Abierto",
-  IN_PREPARATION: "En preparación",
-  READY: "Listo",
-  DELIVERED: "Entregado",
-  PAID: "Pagado",
-  CLOSED: "Cerrado",
-  CANCELLED: "Cancelado",
-};
 
 export function BillingPage() {
   const { orderId = "" } = useParams();
@@ -94,130 +86,112 @@ export function BillingPage() {
     }
   }
 
-  if (billing.isLoading) return <Spinner label="Cargando cuenta…" />;
+  if (billing.isLoading) return <div className="page narrow"><PageHeader title="Cobro" /><SkeletonList rows={3} height={90} label="Cargando cuenta" /></div>;
   if (billing.isError || !data) {
     return (
-      <div className="stack">
-        <EmptyState icon="📡" title="No se pudo cargar la cuenta" />
-        <button className="btn secondary" onClick={() => navigate(-1)}>
-          ← Volver
-        </button>
+      <div className="page narrow">
+        <EmptyState icon="wifiOff" title="No se pudo cargar la cuenta" hint="Verifique la conexión e intente de nuevo."
+          action={<button className="btn secondary" onClick={() => navigate(-1)}><Icon name="arrowLeft" />Volver</button>} />
       </div>
     );
   }
 
   const payments = data.payments ?? [];
+  const orderStatus = ORDER_STATUS[data.status as keyof typeof ORDER_STATUS];
+  const settled = pending <= 0.001;
 
   return (
-    <div className="stack">
-      {uncertainPayment ? <div className="card">
-        <p>Hay un pago cuya respuesta quedó pendiente. Verifique ese pago antes de registrar otro.</p>
-        <button className="btn" disabled={busy} onClick={() => void registerPayment()}>Verificar pago pendiente</button>
-      </div> : null}
+    <div className="page">
+      <PageHeader
+        title={data.table_name ?? "Pedido"}
+        subtitle={orderStatus ? <StatusBadge label={orderStatus.label} tone={orderStatus.tone} icon={orderStatus.icon} /> : data.status}
+        actions={<button className="btn ghost" onClick={() => navigate(-1)}><Icon name="arrowLeft" />Volver</button>}
+      />
 
-      <div className="card">
-        <div className="row wrap">
-          <div className="grow">
-            <h2>{data.table_name ?? "Pedido"}</h2>
-            <span className="chip info">{STATUS_LABEL[data.status] ?? data.status}</span>
-          </div>
-          <button className="btn ghost small" onClick={() => navigate(-1)}>
-            ← Volver
-          </button>
+      {uncertainPayment ? (
+        <div className="offline-banner" role="alert">
+          <Icon name="alert" />
+          <span className="grow">Hay un cobro cuya respuesta no llegó. Verifíquelo antes de registrar otro: se reenvía el mismo cobro, sin duplicarlo.</span>
+          <button className="btn small" disabled={busy} onClick={() => void registerPayment()}>Verificar pago pendiente</button>
         </div>
-        <div className="grid-2" style={{ marginTop: 12 }}>
-          <div className="kpi">
-            <div className="label">Total</div>
-            <div className="value">{money(data.total)}</div>
-          </div>
-          <div className="kpi">
-            <div className="label">Pendiente</div>
-            <div className="value" style={{ color: pending > 0.001 ? "var(--warning)" : "var(--success)" }}>
-              {money(pending > 0.001 ? pending : 0)}
-            </div>
-          </div>
-        </div>
-        <div className="row" style={{ marginTop: 10 }}>
-          <span className="grow hint">Pagado</span>
-          <strong style={{ color: "var(--success)" }}>{money(data.paid_amount)}</strong>
-        </div>
-      </div>
+      ) : null}
 
-      <div className="card">
-        <div className="section-title" style={{ marginTop: 0 }}>
-          <h2>Consumo</h2>
-        </div>
-        {data.items.map((item) => (
-          <div className="item-row" key={item.order_item_id}>
-            <span className="qty">×{item.quantity}</span>
-            <div className="name">
-              <div style={{ fontWeight: 700 }}>{item.name}</div>
-              <div className="hint">{money(item.unit_price)} c/u</div>
-            </div>
-            <strong>{money(item.total)}</strong>
-          </div>
-        ))}
-        {data.items.length === 0 ? <div className="hint">Sin productos en la cuenta.</div> : null}
-      </div>
-
-      {pending > 0.001 ? (
-        <div className="card">
-          <div className="section-title" style={{ marginTop: 0 }}>
-            <h2>Cobrar</h2>
-          </div>
-          <div className="segmented" style={{ marginBottom: 12, flexWrap: "wrap" }} role="group" aria-label="Método de pago">
-            {METHODS.map((entry) => (
-              <button
-                key={entry.value}
-                className={method === entry.value ? "active" : ""}
-                aria-pressed={method === entry.value}
-                onClick={() => setMethod(entry.value)}
-              >
-                {entry.label}
-              </button>
-            ))}
-          </div>
-          <button className="btn block success" onClick={() => void registerPayment()} disabled={busy}>
-            {busy ? "Registrando…" : `Cobrar ${money(pending)}`}
-          </button>
-          <p className="hint">El cobro requiere conexión. El pedido queda pagado al cubrir el total.</p>
-        </div>
-      ) : data.status === "CANCELLED" ? (
-        <div className="card center" style={{ flexDirection: "column", gap: 8 }}>
-          <div style={{ fontSize: 40 }}>🚫</div>
-          <strong>Pedido cancelado</strong>
-          <span className="hint">Todos los productos se cancelaron: no hay nada que cobrar.</span>
-        </div>
-      ) : (
-        <div className="card center" style={{ flexDirection: "column", gap: 8 }}>
-          <div style={{ fontSize: 40 }}>✅</div>
-          <strong>Pedido pagado</strong>
-          <span className="hint">No hay saldo pendiente.</span>
-        </div>
-      )}
-
-      <div className="card">
-        <div className="section-title" style={{ marginTop: 0 }}>
-          <h2>Pagos realizados</h2>
-        </div>
-        {payments.length === 0 ? (
-          <div className="hint">Aún no hay pagos registrados.</div>
-        ) : (
-          payments.map((payment) => (
-            <div className="item-row" key={payment.id}>
-              <div className="name">
-                <div style={{ fontWeight: 700 }}>
-                  {METHODS.find((entry) => entry.value === payment.method)?.label ?? payment.method}
+      <div className="billing-layout">
+        <div className="stack">
+          <section className="card" aria-labelledby="consumo-title">
+            <div className="section-title"><h2 id="consumo-title">Consumo</h2></div>
+            {data.items.map((item) => (
+              <div className="item-row" key={item.order_item_id}>
+                <span className="qty">×{item.quantity}</span>
+                <div className="name">
+                  <div style={{ fontWeight: 650 }}>{item.name}</div>
+                  <div className="hint">{money(item.unit_price)} c/u</div>
                 </div>
-                <div className="hint">
-                  {new Date(payment.paid_at).toLocaleString("es-PE")}
-                  {payment.split_id ? " · de una división anterior" : ""}
-                </div>
+                <strong className="num">{money(item.total)}</strong>
               </div>
-              <strong style={{ color: "var(--success)" }}>{money(payment.amount)}</strong>
+            ))}
+            {data.items.length === 0 ? <div className="hint">Sin productos en la cuenta.</div> : null}
+          </section>
+
+          <section className="card" aria-labelledby="pagos-title">
+            <div className="section-title"><h2 id="pagos-title">Pagos realizados</h2></div>
+            {payments.length === 0 ? (
+              <div className="hint">Aún no hay pagos registrados.</div>
+            ) : (
+              payments.map((payment) => (
+                <div className="item-row" key={payment.id}>
+                  <div className="name">
+                    <div style={{ fontWeight: 650 }}>{METHODS.find((entry) => entry.value === payment.method)?.label ?? payment.method}</div>
+                    <div className="hint">
+                      {new Date(payment.paid_at).toLocaleString("es-PE")}
+                      {payment.split_id ? " · de una división anterior" : ""}
+                    </div>
+                  </div>
+                  <strong className="num" style={{ color: "var(--ok)" }}>{money(payment.amount)}</strong>
+                </div>
+              ))
+            )}
+          </section>
+        </div>
+
+        <aside className="stack billing-side">
+          <section className="card totals" aria-label="Resumen de la cuenta">
+            <div className="total-line"><span>Total</span><strong className="num">{money(data.total)}</strong></div>
+            <div className="total-line"><span>Pagado</span><strong className="num" style={{ color: "var(--ok)" }}>{money(data.paid_amount)}</strong></div>
+            <div className="total-line due"><span>Pendiente</span>
+              <strong className="num" style={{ color: settled ? "var(--ok)" : "var(--wait)" }}>{money(settled ? 0 : pending)}</strong>
             </div>
-          ))
-        )}
+          </section>
+
+          {!settled ? (
+            <section className="card" aria-labelledby="cobrar-title">
+              <div className="section-title"><h2 id="cobrar-title">Cobrar</h2></div>
+              <div className="method-grid" role="group" aria-label="Método de pago">
+                {METHODS.map((entry) => (
+                  <button key={entry.value} className={method === entry.value ? "active" : ""} aria-pressed={method === entry.value} onClick={() => setMethod(entry.value)}>
+                    {entry.label}
+                  </button>
+                ))}
+              </div>
+              <button className="btn block large success" onClick={() => void registerPayment()} disabled={busy}>
+                {busy ? "Registrando…" : `Cobrar ${money(pending)}`}
+              </button>
+              <p className="hint" style={{ margin: "var(--s3) 0 0" }}>El cobro requiere conexión. El pedido queda pagado al cubrir el total.</p>
+            </section>
+          ) : data.status === "CANCELLED" ? (
+            <section className="card result">
+              <span className="result-icon bad"><Icon name="ban" /></span>
+              <strong>Pedido cancelado</strong>
+              <span className="hint">Todos los productos se cancelaron: no hay nada que cobrar.</span>
+            </section>
+          ) : (
+            <section className="card result">
+              <span className="result-icon"><Icon name="check" /></span>
+              <strong>Pedido pagado</strong>
+              <span className="hint">No hay saldo pendiente.</span>
+            </section>
+          )}
+        </aside>
       </div>
     </div>
   );

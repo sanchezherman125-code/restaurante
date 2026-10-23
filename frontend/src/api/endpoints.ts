@@ -76,6 +76,9 @@ export const ordersApi = {
   cancelItem: (orderId: string, itemId: string, reason?: string, operationId?: string) =>
     api.post<Order>(`${V1}/orders/${orderId}/items/${itemId}/cancel`,
       { reason, client_operation_id: operationId }, { idempotencyKey: operationId }),
+  /** Anula un pedido sin productos ni pagos y libera la mesa. */
+  cancelEmpty: (orderId: string, clientOperationId: string) =>
+    api.post<Order>(`${V1}/orders/${orderId}/cancel`, { client_operation_id: clientOperationId }, { idempotencyKey: clientOperationId }),
   setItemStatus: (orderId: string, itemId: string, status: string, clientOperationId?: string) =>
     api.post<Order>(
       `${V1}/orders/${orderId}/items/${itemId}/status`,

@@ -1,8 +1,11 @@
 import { useNavigate } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { ordersApi } from "../../api/endpoints";
 import { Icon } from "../../components/Icon";
+import { ConfirmDialog } from "../../components/Modal";
+import { errorMessage } from "../../lib/send";
+import { useUi } from "../../stores/ui";
 import { EmptyState, PageHeader, SkeletonList, StatusBadge } from "../../components/Layout";
 import { formatElapsed, money, useElapsed } from "../../hooks/useElapsed";
 import { ORDER_STATUS } from "../../lib/labels";
@@ -24,6 +27,26 @@ function counts(order: Order) {
 
 function OrderCard({ order }: { order: Order }) {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const toast = useUi((state) => state.toast);
+  const [confirmRelease, setConfirmRelease] = useState(false);
+  const [releasing, setReleasing] = useState(false);
+  const empty = order.status === "OPEN" && Number(order.paid_amount) === 0 && order.items.every((item) => item.status === "CANCELLED");
+
+  async function release() {
+    setReleasing(true);
+    try {
+      await ordersApi.cancelEmpty(order.id, crypto.randomUUID());
+      toast("success", `${order.table_name ?? "Mesa"} liberada`, "El pedido vacío se anuló.");
+      void queryClient.invalidateQueries({ queryKey: ["orders"] });
+      void queryClient.invalidateQueries({ queryKey: ["tables"] });
+    } catch (error) {
+      toast("error", "No se pudo liberar la mesa", errorMessage(error));
+    } finally {
+      setReleasing(false);
+      setConfirmRelease(false);
+    }
+  }
   const elapsed = useElapsed(order.opened_at);
   const c = counts(order);
   const status = ORDER_STATUS[order.status];
@@ -59,9 +82,23 @@ function OrderCard({ order }: { order: Order }) {
           {order.table_id ? (
             <button className="btn small secondary" onClick={() => navigate(`/mesas/${order.table_id}`)}>Ver mesa</button>
           ) : null}
-          <button className="btn small" onClick={() => navigate(`/cobro/${order.id}`)}><Icon name="money" />Cobro</button>
+          {empty ? (
+            <button className="btn small ghost" disabled={releasing} onClick={() => setConfirmRelease(true)}><Icon name="x" />Liberar mesa</button>
+          ) : (
+            <button className="btn small" onClick={() => navigate(`/cobro/${order.id}`)}><Icon name="money" />Cobro</button>
+          )}
         </div>
+        {empty ? <p className="hint" style={{ marginTop: "var(--s2)" }}>Pedido sin productos: libere la mesa si nadie va a pedir.</p> : null}
       </div>
+      {confirmRelease ? (
+        <ConfirmDialog
+          title="Liberar mesa"
+          message={`${order.table_name ?? "El pedido"} no tiene productos ni pagos. Se anulará el pedido vacío y la mesa quedará libre. Queda registrado en la auditoría.`}
+          confirmLabel="Liberar mesa"
+          onConfirm={() => void release()}
+          onCancel={() => setConfirmRelease(false)}
+        />
+      ) : null}
     </article>
   );
 }

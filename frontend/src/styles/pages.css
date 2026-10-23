@@ -273,3 +273,5 @@
   .table-progress { display: none; }
   .table-meta strong { margin-left: 0; flex-basis: 100%; }
 }
+
+.table-tile.draft { border-style: dashed; border-color: color-mix(in srgb, var(--wait) 55%, transparent); }

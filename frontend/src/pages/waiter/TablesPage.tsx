@@ -5,8 +5,8 @@ import { ordersApi, shiftsApi, tablesApi } from "../../api/endpoints";
 import { Icon } from "../../components/Icon";
 import { Modal } from "../../components/Modal";
 import { EmptyState, PageHeader, SearchField, SkeletonList } from "../../components/Layout";
-import { errorMessage, sendOrQueue } from "../../lib/send";
 import { usePendingOrders } from "../../stores/pendingOrders";
+import { useTableDrafts } from "../../stores/tableDrafts";
 import { useUi } from "../../stores/ui";
 import { formatElapsed, money, useElapsed } from "../../hooks/useElapsed";
 import type { Order, RestaurantTable } from "../../types/api";
@@ -23,13 +23,13 @@ function orderProgress(order?: Order): { ready: number; preparing: number; pendi
   };
 }
 
-function TableTile({ table, pending, state, order, onOpen }: {
-  table: RestaurantTable; pending: boolean; state: OperationalTableState; order?: Order; onOpen: (tableId: string) => void;
+function TableTile({ table, pending, draft, state, order, onOpen }: {
+  table: RestaurantTable; pending: boolean; draft: boolean; state: OperationalTableState; order?: Order; onOpen: (tableId: string) => void;
 }) {
   const elapsed = useElapsed(order?.opened_at);
   const progress = orderProgress(order);
   const stateLabel = state === "INACTIVE" ? "inactiva" : state === "OPEN" ? "ocupada" : "libre";
-  const tone = pending ? "pending" : progress.ready > 0 ? "ready" : state.toLowerCase();
+  const tone = pending ? "pending" : progress.ready > 0 ? "ready" : draft && state === "FREE" ? "draft" : state.toLowerCase();
 
   return (
     <button
@@ -44,6 +44,7 @@ function TableTile({ table, pending, state, order, onOpen }: {
         {pending ? <span className="chip warning"><Icon name="cloud" />Sin enviar</span>
           : progress.ready > 0 ? <span className="chip success"><Icon name="check" />{progress.ready} listo{progress.ready > 1 ? "s" : ""}</span>
           : state === "OPEN" ? <span className="chip ember"><Icon name="user" />Ocupada</span>
+          : draft ? <span className="chip warning"><Icon name="note" />Sin pedido</span>
           : state === "INACTIVE" ? <span className="chip"><Icon name="ban" />Inactiva</span>
           : <span className="chip free"><Icon name="chair" />Libre</span>}
       </span>
@@ -57,7 +58,8 @@ function TableTile({ table, pending, state, order, onOpen }: {
               <strong className="num">{money(order.total)}</strong>
             </>
           ) : state === "OPEN" ? "Pedido abierto"
-          : state === "INACTIVE" ? "No disponible" : "Toque para abrir"}
+          : state === "INACTIVE" ? "No disponible"
+          : draft ? "Abierta en este dispositivo, aún sin comanda" : "Toque para abrir"}
       </span>
       {state === "OPEN" && !pending && (progress.preparing > 0 || progress.pending > 0) ? (
         <span className="table-progress">
@@ -74,11 +76,11 @@ export function TablesPage() {
   const toast = useUi((state) => state.toast);
   const [pendingTable, setPendingTable] = useState<string | null>(null);
   const [persons, setPersons] = useState(2);
-  const [creating, setCreating] = useState(false);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<"ALL" | "FREE" | "OPEN" | "PENDING">("ALL");
   const pendingRecords = usePendingOrders((state) => state.records);
-  const addPending = usePendingOrders((state) => state.add);
+  const drafts = useTableDrafts((state) => state.drafts);
+  const openDraft = useTableDrafts((state) => state.open);
 
   const tables = useQuery({ queryKey: ["tables"], queryFn: tablesApi.list });
   const activeOrders = useQuery({ queryKey: ["orders", "active"], queryFn: () => ordersApi.active(), refetchInterval: 15000, retry: false });
@@ -127,61 +129,26 @@ export function TablesPage() {
   async function openTable(tableId: string) {
     const table = tables.data?.find((t) => t.id === tableId);
     if (!table) return;
-    if (table.status === "OPEN" || table.order_id) {
+    if (table.status === "OPEN" || table.order_id || drafts[tableId]) {
       navigate(`/mesas/${tableId}`);
+      return;
+    }
+    if (!currentShift.data) {
+      toast("error", "No hay un turno abierto", "Pida a un administrador que abra el turno para atender mesas.");
       return;
     }
     setPersons(2);
     setPendingTable(tableId);
   }
 
-  async function confirmCreate() {
+  function confirmCreate() {
     if (!pendingTable) return;
     const table = tables.data?.find((t) => t.id === pendingTable);
     if (!table) return;
-    setCreating(true);
-    try {
-      const outcome = await sendOrQueue(
-        {
-          operation_type: "CREATE_ORDER",
-          path: "/api/v1/orders",
-          method: "POST",
-          body: {
-            order_type: "DINE_IN",
-            table_id: table.id,
-            persons_count: persons,
-            notes: null,
-          },
-        },
-        (clientOperationId) =>
-          ordersApi.create({
-            order_type: "DINE_IN",
-            table_id: table.id,
-            persons_count: persons,
-            notes: null,
-            client_operation_id: clientOperationId,
-          }, clientOperationId),
-      );
-      if (outcome.queued && outcome.operationId) {
-        addPending({
-          operation_id: outcome.operationId,
-          table_id: table.id,
-          table_name: table.name,
-          persons_count: persons,
-          created_at: Date.now(),
-          server_order_id: null,
-          error: null,
-        });
-      } else {
-        toast("success", `Mesa ${table.name} abierta`);
-      }
-      setPendingTable(null);
-      navigate(`/mesas/${table.id}`);
-    } catch (error) {
-      toast("error", "No se pudo abrir la mesa", errorMessage(error));
-    } finally {
-      setCreating(false);
-    }
+    // Solo se abre localmente: el pedido nace en el servidor con la primera comanda enviada.
+    openDraft({ table_id: table.id, table_name: table.name, persons_count: persons, created_at: Date.now() });
+    setPendingTable(null);
+    navigate(`/mesas/${table.id}`);
   }
 
   const openTables = (tables.data ?? []).length;
@@ -218,6 +185,7 @@ export function TablesPage() {
               key={table.id}
               table={table}
               pending={!!pending}
+              draft={Boolean(drafts[table.id])}
               state={state}
               order={activeOrders.data?.find((activeOrder) => activeOrder.table_id === table.id)}
               onOpen={(tableId) => void openTable(tableId)}
@@ -237,9 +205,7 @@ export function TablesPage() {
           footer={
             <>
               <button className="btn secondary grow" onClick={() => setPendingTable(null)}>Cancelar</button>
-              <button className="btn grow" onClick={() => void confirmCreate()} disabled={creating}>
-                {creating ? "Abriendo…" : "Abrir mesa"}
-              </button>
+              <button className="btn grow" onClick={confirmCreate}>Abrir mesa</button>
             </>
           }
         >
@@ -255,7 +221,7 @@ export function TablesPage() {
                 <button key={n} type="button" className={persons === n ? "active" : ""} aria-pressed={persons === n} onClick={() => setPersons(n)}>{n}</button>
               ))}
             </div>
-            <p className="hint">El pedido quedará vinculado a {tables.data?.find((table) => table.id === pendingTable)?.name ?? "la mesa"}.</p>
+            <p className="hint">El pedido se crea al enviar la primera comanda; si sale sin pedir nada, la mesa sigue libre.</p>
           </div>
         </Modal>
       ) : null}

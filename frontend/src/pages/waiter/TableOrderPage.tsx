@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { menuApi, ordersApi } from "../../api/endpoints";
@@ -9,8 +9,9 @@ import { formatElapsed, money, useElapsed } from "../../hooks/useElapsed";
 import { AREA_NAME, ITEM_STATUS, ORDER_STATUS, TASK_STATUS } from "../../lib/labels";
 import { errorMessage, sendOrQueue } from "../../lib/send";
 import { enqueue } from "../../offline/queue";
-import type { MenuItem, OrderItem } from "../../types/api";
+import type { MenuItem, Order, OrderItem } from "../../types/api";
 import { usePendingOrders } from "../../stores/pendingOrders";
+import { useTableDrafts } from "../../stores/tableDrafts";
 import { useUi } from "../../stores/ui";
 
 interface CartLine {
@@ -78,6 +79,9 @@ export function TableOrderPage() {
   const queryClient = useQueryClient();
   const toast = useUi((state) => state.toast);
   const pendingRecord = usePendingOrders((state) => state.records.find((r) => r.table_id === tableId && !r.server_order_id && !r.error));
+  const addPending = usePendingOrders((state) => state.add);
+  const draft = useTableDrafts((state) => state.drafts[tableId]);
+  const discardDraft = useTableDrafts((state) => state.discard);
 
   const menu = useQuery({ queryKey: ["menu"], queryFn: menuApi.get });
   const orders = useQuery({ queryKey: ["orders", "active"], queryFn: () => ordersApi.active(), refetchInterval: 15000, retry: false });
@@ -99,7 +103,13 @@ export function TableOrderPage() {
     const matchesSearch = !search.trim() || `${item.name} ${item.description ?? ""}`.toLocaleLowerCase("es-PE").includes(search.trim().toLocaleLowerCase("es-PE"));
     return item.is_active && matchesCategory && matchesSearch;
   });
-  const table = pendingRecord?.table_name ?? order?.table_name ?? "Mesa";
+  const table = pendingRecord?.table_name ?? order?.table_name ?? draft?.table_name ?? "Mesa";
+  // Si la mesa ya tiene pedido (enviado desde aquí o por otro mesero), el borrador local deja de tener sentido.
+  useEffect(() => {
+    if (draft && (order || pendingRecord)) discardDraft(draft.table_id);
+  }, [draft, order, pendingRecord, discardDraft]);
+  const [releasing, setReleasing] = useState(false);
+  const [confirmRelease, setConfirmRelease] = useState(false);
   const cartUnits = cart.reduce((sum, line) => sum + line.quantity, 0);
   const cartSubtotal = cart.reduce((sum, line) => sum + Number(line.item.price) * line.quantity, 0);
   const cartUnitLabel = `${cartUnits} ${cartUnits === 1 ? "unidad" : "unidades"}`;
@@ -154,6 +164,44 @@ export function TableOrderPage() {
           (clientOperationId) => ordersApi.createCommand(order.id, payload, clientOperationId),
         );
         queued = outcome.queued;
+      } else if (draft) {
+        // Primera comanda de una mesa recién abierta: aquí nace el pedido en el servidor.
+        const orderBody = { order_type: "DINE_IN" as const, table_id: draft.table_id, persons_count: draft.persons_count, notes: null };
+        const created: { order: Order | null } = { order: null };
+        const orderOutcome = await sendOrQueue(
+          { operation_type: "CREATE_ORDER", path: "/api/v1/orders", method: "POST", body: orderBody },
+          async (clientOperationId) => {
+            created.order = await ordersApi.create({ ...orderBody, client_operation_id: clientOperationId }, clientOperationId);
+          },
+        );
+        if (orderOutcome.queued && orderOutcome.operationId) {
+          addPending({
+            operation_id: orderOutcome.operationId, table_id: draft.table_id, table_name: draft.table_name,
+            persons_count: draft.persons_count, created_at: Date.now(), server_order_id: null, error: null,
+          });
+          await enqueue({
+            operation_type: "CREATE_COMMAND",
+            path: "/api/v1/orders/{orderRef}/commands",
+            method: "POST",
+            body: payload,
+            parent_operation_id: orderOutcome.operationId,
+          });
+          queued = true;
+        } else if (created.order) {
+          const newOrder = created.order;
+          const sent: { order: Order | null } = { order: null };
+          const outcome = await sendOrQueue(
+            { operation_type: "CREATE_COMMAND", path: `/api/v1/orders/${newOrder.id}/commands`, method: "POST", body: payload },
+            async (clientOperationId) => {
+              sent.order = (await ordersApi.createCommand(newOrder.id, payload, clientOperationId)).order;
+            },
+          );
+          queued = outcome.queued;
+          // El pedido ya existe: se refleja de inmediato para no volver a crearlo con un segundo envío.
+          const known = sent.order ?? newOrder;
+          queryClient.setQueryData<Order[]>(["orders", "active"], (current) => [...(current ?? []).filter((entry) => entry.id !== known.id), known]);
+        }
+        discardDraft(draft.table_id);
       } else {
         toast("error", "No hay pedido abierto en esta mesa");
         return;
@@ -221,7 +269,24 @@ export function TableOrderPage() {
   }
 
   if (orders.isLoading && !orders.data) return <div className="page"><SkeletonList rows={5} height={72} label="Cargando pedido" /></div>;
-  if (!order && !pendingRecord) {
+  async function releaseEmptyOrder() {
+    if (!order) return;
+    setReleasing(true);
+    try {
+      await ordersApi.cancelEmpty(order.id, crypto.randomUUID());
+      toast("success", `${table} liberada`, "El pedido vacío se anuló.");
+      void queryClient.invalidateQueries({ queryKey: ["orders"] });
+      void queryClient.invalidateQueries({ queryKey: ["tables"] });
+      navigate("/mesas");
+    } catch (error) {
+      toast("error", "No se pudo liberar la mesa", errorMessage(error));
+    } finally {
+      setReleasing(false);
+      setConfirmRelease(false);
+    }
+  }
+
+  if (!order && !pendingRecord && !draft) {
     return (
       <div className="page narrow">
         <EmptyState icon="chair" title="Esta mesa no tiene pedido abierto" hint="Vuelva al salón para abrir la mesa."
@@ -235,6 +300,9 @@ export function TableOrderPage() {
   const orderLines = [...(order?.items ?? [])].sort((a, b) => URGENCY[a.status] - URGENCY[b.status]);
   const readyCount = orderLines.filter((item) => item.status === "READY").length;
   const orderStatus = order ? ORDER_STATUS[order.status] : null;
+  // Pedido que quedó sin productos ni pagos (p. ej. creado por la versión anterior al abrir la mesa).
+  const orderIsEmpty = Boolean(order && order.status === "OPEN" && Number(order.paid_amount) === 0
+    && order.items.every((item) => item.status === "CANCELLED"));
   const activeCategoryName = menu.data?.categories.find((category) => category.id === activeCategory)?.name ?? "Productos";
   // Por defecto se muestra el pedido cuando hay algo que entregar ahora (listo, o bebida directa pendiente).
   const actionable = orderLines.some((item) => item.status === "READY" || (item.status === "PENDING" && !item.requires_preparation));
@@ -250,11 +318,21 @@ export function TableOrderPage() {
           <div className="hint">
             {pendingRecord
               ? "Pedido guardado en este dispositivo: aún no llegó al servidor"
-              : `${order?.persons_count ?? 0} personas`}
+              : !order && draft
+                ? `${draft.persons_count} personas · el pedido se crea al enviar la primera comanda`
+                : `${order?.persons_count ?? 0} personas`}
             {orderStatus ? <> · <StatusBadge label={orderStatus.label} tone={orderStatus.tone} icon={orderStatus.icon} /></> : null}
           </div>
         </div>
-        {order ? <button className="btn" onClick={() => navigate(`/cobro/${order.id}`)}><Icon name="money" />Cobrar</button> : null}
+        {!order && !pendingRecord && draft ? (
+          <button className="btn ghost" onClick={() => { discardDraft(draft.table_id); navigate("/mesas"); }}>
+            <Icon name="x" />Cerrar mesa
+          </button>
+        ) : null}
+        {orderIsEmpty ? (
+          <button className="btn ghost" onClick={() => setConfirmRelease(true)} disabled={releasing}><Icon name="x" />Liberar mesa</button>
+        ) : null}
+        {order && !orderIsEmpty ? <button className="btn" onClick={() => navigate(`/cobro/${order.id}`)}><Icon name="money" />Cobrar</button> : null}
       </div>
 
       {readyCount > 0 ? (
@@ -405,6 +483,16 @@ export function TableOrderPage() {
         </button>
       ) : null}
 
+      {confirmRelease && order ? (
+        <ConfirmDialog
+          title="Liberar mesa"
+          message={`${table} no tiene productos ni pagos. Se anulará el pedido vacío y la mesa quedará libre. Queda registrado en la auditoría.`}
+          confirmLabel="Liberar mesa"
+          onConfirm={() => void releaseEmptyOrder()}
+          onCancel={() => setConfirmRelease(false)}
+        />
+      ) : null}
+
       {confirmCancel && order ? (
         <ConfirmDialog
           title="Cancelar producto"
@@ -433,7 +521,7 @@ export function TableOrderPage() {
                 <li key={line.item.id}><span><strong>{line.quantity}×</strong> {line.item.name}{line.notes.trim() ? <em> — {line.notes.trim()}</em> : null}</span><span className="num">{money(Number(line.item.price) * line.quantity)}</span></li>
               ))}
             </ul>
-            <div className="row"><span className="grow">{table} · {order?.persons_count ?? pendingRecord?.persons_count ?? 0} personas</span><strong className="num">{money(cartSubtotal)}</strong></div>
+            <div className="row"><span className="grow">{table} · {order?.persons_count ?? pendingRecord?.persons_count ?? draft?.persons_count ?? 0} personas</span><strong className="num">{money(cartSubtotal)}</strong></div>
             <p className="hint">Se enviará a las áreas de preparación correspondientes.</p>
           </div>
         </Modal>

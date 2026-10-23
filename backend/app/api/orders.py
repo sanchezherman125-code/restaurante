@@ -24,6 +24,7 @@ from app.schemas.orders import (
     ItemCancelRequest,
     ItemStatusRequest,
     ItemUpdate,
+    OrderCancelRequest,
     OrderCreate,
     OrderItemOut,
     OrderOut,
@@ -204,6 +205,50 @@ def create_command(
     key = payload.client_operation_id or idem_key
     items = [i.model_dump() for i in payload.items]
     status, body = _create_command_impl(db, user, order, items, payload.notes, key, device_id)
+    return JSONResponse(status_code=status, content=body)
+
+
+@router.post("/{order_id}/cancel")
+def cancel_empty_order(
+    order_id: UUID,
+    db: DbSession,
+    user: WaiterUser,
+    payload: OrderCancelRequest | None = None,
+    idem_key: IdempotencyKeyHeader = None,
+    device_id: Annotated[str | None, Header(alias="X-Device-Id")] = None,
+) -> JSONResponse:
+    """Anula un pedido sin productos activos ni pagos (mesa abierta sin pedir) y libera la mesa."""
+    order = order_service.get_active_order(db, order_id)
+    _authorize_order_read(user, order)
+
+    def operation() -> tuple[int, dict]:
+        shift, locked = order_service.lock_order_and_shift(db, order.id, order.shift_id)
+        order_service.ensure_shift_open(shift)
+        if locked.status == OrderStatus.CANCELLED:
+            return 200, _serialize(locked)
+        order_service.ensure_order_modifiable(locked)
+        if locked.paid_amount > 0 or any(item.status != ItemStatus.CANCELLED for item in locked.items):
+            raise ConflictError(
+                "ORDER_NOT_EMPTY",
+                "Solo se puede liberar una mesa sin productos ni pagos. Cancele los productos o cobre el pedido.",
+            )
+        before = locked.status
+        locked.status = OrderStatus.CANCELLED
+        locked.closed_at = order_service.utcnow()
+        db.flush()
+        audit_actions.audit(
+            db, user_id=user.id, action=audit_actions.ORDER_CANCELLED,
+            entity_type="orders", entity_id=locked.id,
+            before_data={"status": before}, after_data={"status": locked.status, "reason": "empty_order_released"},
+            device_id=device_id,
+        )
+        hub.after_commit(db, "order.updated", order_service.order_event_payload(locked), {"waiters", "admin"})
+        hub.after_commit(db, "tables.changed", {"table_id": str(locked.table_id) if locked.table_id else None},
+                         {"waiters", "admin"})
+        return 200, _serialize(locked)
+
+    key = (payload.client_operation_id if payload else None) or idem_key
+    status, body = execute_idempotent(db, key, user.id, "CANCEL_EMPTY_ORDER", operation, scope=str(order_id))
     return JSONResponse(status_code=status, content=body)
 
 

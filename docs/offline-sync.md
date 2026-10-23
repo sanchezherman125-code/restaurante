@@ -7,7 +7,8 @@ al reconectar, la cola reintenta y el backend crea **exactamente un** recurso, n
 
 | Operación | Endpoint | En cola offline |
 |---|---|---|
-| `CREATE_ORDER` | `POST /api/v1/orders` | ✅ |
+| `OPEN_TABLE_WITH_COMMAND` | `POST /api/v1/orders/open-with-command` | ✅ (primera comanda: pedido + comanda atómicos; las siguientes comandas se encadenan a esta operación) |
+| `CREATE_ORDER` | `POST /api/v1/orders` | ✅ (ya no lo usa el salón) |
 | `ADD_ORDER_ITEM` | `POST /api/v1/orders/{id}/items` | ✅ |
 | `CREATE_COMMAND` | `POST /api/v1/orders/{id}/commands` | ✅ |
 | `CANCEL_ORDER_ITEM` | `POST /api/v1/orders/{id}/items/{id}/cancel` | ✅ |

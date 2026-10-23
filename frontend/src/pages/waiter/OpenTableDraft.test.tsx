@@ -2,6 +2,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "../../api/client";
 import { usePendingOrders } from "../../stores/pendingOrders";
 import { useSession } from "../../stores/session";
 import { useTableDrafts } from "../../stores/tableDrafts";
@@ -14,8 +15,7 @@ const mocks = vi.hoisted(() => ({
   activeOrders: [] as unknown[],
   sendOrQueue: vi.fn(),
   enqueue: vi.fn(),
-  create: vi.fn(),
-  createCommand: vi.fn(),
+  openWithCommand: vi.fn(),
   setQueryData: vi.fn(),
 }));
 
@@ -36,7 +36,7 @@ vi.mock("@tanstack/react-query", () => ({
   useQueryClient: () => ({ invalidateQueries: vi.fn(), setQueryData: mocks.setQueryData }),
 }));
 vi.mock("../../api/endpoints", () => ({
-  ordersApi: { create: mocks.create, createCommand: mocks.createCommand, active: vi.fn(), setItemStatus: vi.fn(), cancelItem: vi.fn(), cancelEmpty: vi.fn() },
+  ordersApi: { openWithCommand: mocks.openWithCommand, active: vi.fn(), setItemStatus: vi.fn(), cancelItem: vi.fn(), cancelEmpty: vi.fn() },
   menuApi: { get: vi.fn() },
   tablesApi: { list: vi.fn() },
   shiftsApi: { current: vi.fn() },
@@ -65,7 +65,7 @@ describe("abrir una mesa no crea un pedido hasta enviar la primera comanda", () 
   beforeEach(() => {
     sessionStorage.clear();
     localStorage.clear();
-    for (const mock of [mocks.sendOrQueue, mocks.enqueue, mocks.create, mocks.createCommand, mocks.setQueryData]) mock.mockReset();
+    for (const mock of [mocks.sendOrQueue, mocks.enqueue, mocks.openWithCommand, mocks.setQueryData]) mock.mockReset();
     mocks.shift = { status: "OPEN", opened_at: "2026-10-22T21:00:00Z" };
     mocks.activeOrders = [];
     useSession.setState({ user: { id: "w1", username: "ana", display_name: "Ana", role: "WAITER", is_active: true, created_at: "" } });
@@ -80,7 +80,7 @@ describe("abrir una mesa no crea un pedido hasta enviar la primera comanda", () 
     await user.click(screen.getByRole("button", { name: /Mesa 2, libre/ }));
     await user.click(screen.getByRole("button", { name: "Aumentar personas" }));
     await user.click(screen.getByRole("button", { name: "Abrir mesa" }));
-    expect(mocks.create).not.toHaveBeenCalled();
+    expect(mocks.openWithCommand).not.toHaveBeenCalled();
     expect(mocks.sendOrQueue).not.toHaveBeenCalled();
     expect(useTableDrafts.getState().drafts["table-2"]).toMatchObject({ table_name: "Mesa 2", persons_count: 3 });
     expect(await screen.findByText(/el pedido se crea al enviar la primera comanda/)).toBeVisible();
@@ -92,7 +92,7 @@ describe("abrir una mesa no crea un pedido hasta enviar la primera comanda", () 
     app("/mesas/table-2");
     await user.click(screen.getByRole("button", { name: "Cerrar mesa" }));
     expect(useTableDrafts.getState().drafts["table-2"]).toBeUndefined();
-    expect(mocks.create).not.toHaveBeenCalled();
+    expect(mocks.openWithCommand).not.toHaveBeenCalled();
     expect(await screen.findByRole("button", { name: /Mesa 2, libre/ })).toBeVisible();
   });
 
@@ -105,39 +105,60 @@ describe("abrir una mesa no crea un pedido hasta enviar la primera comanda", () 
     expect(useUi.getState().toasts.map((toast) => toast.title)).toContain("No hay un turno abierto");
   });
 
-  it("con conexión, la primera comanda crea el pedido y luego envía la comanda a ese pedido", async () => {
+  it("con conexión, la primera comanda crea pedido y comanda en UNA sola solicitud", async () => {
     useTableDrafts.getState().open({ table_id: "table-2", table_name: "Mesa 2", persons_count: 4, created_at: Date.now() });
     mocks.sendOrQueue.mockImplementation(async (_op, exec) => { await exec("op-1"); return { queued: false, operationId: null }; });
-    mocks.create.mockResolvedValue({ id: "order-9", table_id: "table-2", items: [], commands: [] });
-    mocks.createCommand.mockResolvedValue({ order: { id: "order-9", table_id: "table-2", items: [], commands: [] } });
+    mocks.openWithCommand.mockResolvedValue({ id: "order-9", table_id: "table-2", items: [], commands: [], command: { id: "cmd-1" } });
     const user = userEvent.setup();
     app("/mesas/table-2");
     await sendFirstCommand(user);
-    await waitFor(() => expect(mocks.createCommand).toHaveBeenCalledTimes(1));
-    expect(mocks.sendOrQueue.mock.calls.map(([op]) => op.operation_type)).toEqual(["CREATE_ORDER", "CREATE_COMMAND"]);
-    expect(mocks.create.mock.calls[0][0]).toMatchObject({ order_type: "DINE_IN", table_id: "table-2", persons_count: 4 });
-    expect(mocks.createCommand.mock.calls[0][0]).toBe("order-9");
+    await waitFor(() => expect(mocks.openWithCommand).toHaveBeenCalledTimes(1));
+    expect(mocks.sendOrQueue).toHaveBeenCalledTimes(1);
+    expect(mocks.sendOrQueue.mock.calls[0][0]).toMatchObject({ operation_type: "OPEN_TABLE_WITH_COMMAND", path: "/api/v1/orders/open-with-command" });
+    const [payload, operationId] = mocks.openWithCommand.mock.calls[0];
+    expect(payload).toMatchObject({ table_id: "table-2", persons_count: 4, items: [{ menu_item_id: "pollo", quantity: 1 }] });
+    expect(operationId).toBe("op-1");
     expect(mocks.setQueryData).toHaveBeenCalled();
     expect(useTableDrafts.getState().drafts["table-2"]).toBeUndefined();
   });
 
-  it("sin conexión, el pedido y la comanda quedan en la cola, encadenados", async () => {
+  it("sin conexión, queda UNA operación en la cola y las siguientes comandas se encadenan a ella", async () => {
     useTableDrafts.getState().open({ table_id: "table-2", table_name: "Mesa 2", persons_count: 2, created_at: Date.now() });
-    mocks.sendOrQueue.mockResolvedValue({ queued: true, operationId: "queued-order" });
+    mocks.sendOrQueue.mockResolvedValue({ queued: true, operationId: "queued-open" });
     const user = userEvent.setup();
     app("/mesas/table-2");
     await sendFirstCommand(user);
+    await waitFor(() => expect(usePendingOrders.getState().records).toHaveLength(1));
+    expect(mocks.sendOrQueue).toHaveBeenCalledTimes(1);
+    expect(mocks.enqueue).not.toHaveBeenCalled(); // ya no hay una segunda operación suelta que pueda quedar sola
+    expect(usePendingOrders.getState().records[0]).toMatchObject({ operation_id: "queued-open", table_id: "table-2" });
+    expect(useTableDrafts.getState().drafts["table-2"]).toBeUndefined();
+    // Una segunda comanda mientras sigue sin conexión se encadena a la operación de apertura.
+    await user.click(screen.getByRole("button", { name: "Agregar Pollo a la brasa" }));
+    await user.click(screen.getByTestId("send-command"));
+    await user.click(screen.getByRole("button", { name: "Confirmar envío" }));
     await waitFor(() => expect(mocks.enqueue).toHaveBeenCalledTimes(1));
     expect(mocks.enqueue.mock.calls[0][0]).toMatchObject({
-      operation_type: "CREATE_COMMAND", path: "/api/v1/orders/{orderRef}/commands", parent_operation_id: "queued-order",
+      operation_type: "CREATE_COMMAND", path: "/api/v1/orders/{orderRef}/commands", parent_operation_id: "queued-open",
     });
-    expect(usePendingOrders.getState().records).toEqual([expect.objectContaining({ operation_id: "queued-order", table_id: "table-2" })]);
-    expect(mocks.createCommand).not.toHaveBeenCalled();
   });
 
-  it("si el servidor rechaza crear el pedido, la mesa y el carrito se conservan", async () => {
+  it("si otro mesero ya abrió la mesa: conflicto claro, el carrito y el borrador se conservan", async () => {
     useTableDrafts.getState().open({ table_id: "table-2", table_name: "Mesa 2", persons_count: 2, created_at: Date.now() });
-    mocks.sendOrQueue.mockRejectedValue(new Error("La mesa ya tiene un pedido abierto."));
+    mocks.sendOrQueue.mockRejectedValue(new ApiError(409, "TABLE_ALREADY_OPEN", "La mesa ya tiene un pedido abierto."));
+    const user = userEvent.setup();
+    app("/mesas/table-2");
+    await sendFirstCommand(user);
+    await waitFor(() => expect(useUi.getState().toasts.map((toast) => toast.title)).toContain("Esta mesa ya fue abierta por otro mesero"));
+    expect(useTableDrafts.getState().drafts["table-2"]).toBeDefined();
+    expect(screen.getByTestId("send-command")).toBeInTheDocument();
+    expect(screen.getAllByText(/1 unidad/).length).toBeGreaterThan(0);
+    expect(usePendingOrders.getState().records).toHaveLength(0);
+  });
+
+  it("un fallo genérico del servidor también conserva mesa y carrito", async () => {
+    useTableDrafts.getState().open({ table_id: "table-2", table_name: "Mesa 2", persons_count: 2, created_at: Date.now() });
+    mocks.sendOrQueue.mockRejectedValue(new Error("boom"));
     const user = userEvent.setup();
     app("/mesas/table-2");
     await sendFirstCommand(user);

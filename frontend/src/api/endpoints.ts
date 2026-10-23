@@ -58,7 +58,22 @@ export interface CommandPayload {
   client_operation_id?: string;
 }
 
+export interface OpenTablePayload {
+  table_id: string;
+  persons_count: number;
+  items: { menu_item_id: string; quantity: number; notes?: string | null }[];
+  notes?: string | null;
+  order_notes?: string | null;
+}
+
 export const ordersApi = {
+  /** Abre la mesa y registra su primera comanda en una sola transacción (el servidor no deja pedidos vacíos). */
+  openWithCommand: (payload: OpenTablePayload, clientOperationId: string) =>
+    api.post<Order & { command: Command }>(
+      `${V1}/orders/open-with-command`,
+      { ...payload, client_operation_id: clientOperationId },
+      { idempotencyKey: clientOperationId },
+    ),
   active: (area?: string) => api.get<Order[]>(`${V1}/orders/active${area ? `?area=${area}` : ""}`),
   get: (id: string) => api.get<Order>(`${V1}/orders/${id}`),
   create: (payload: CreateOrderPayload, idempotencyKey?: string) =>

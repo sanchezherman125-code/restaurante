@@ -44,6 +44,24 @@ class CommandCreate(BaseModel):
         return self
 
 
+class OrderOpenWithCommand(BaseModel):
+    """Abre una mesa y registra su primera comanda en una sola operación atómica."""
+
+    table_id: UUID
+    persons_count: int = Field(ge=1, le=100)
+    order_notes: str | None = Field(default=None, max_length=1000)
+    items: list[ItemCreate] = Field(min_length=1, max_length=50)
+    notes: str | None = Field(default=None, max_length=1000)
+    client_operation_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def unique_menu_items(self) -> "OrderOpenWithCommand":
+        ids = [i.menu_item_id for i in self.items]
+        if len(ids) != len(set(ids)):
+            raise ValueError("No se permiten productos duplicados en la misma comanda")
+        return self
+
+
 class ItemUpdate(BaseModel):
     quantity: int | None = Field(default=None, ge=1, le=99)
     notes: str | None = Field(default=None, max_length=500)

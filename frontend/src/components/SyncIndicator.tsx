@@ -3,6 +3,17 @@ import { useState } from "react";
 import { ConfirmDialog, Modal } from "./Modal";
 import { Icon } from "./Icon";
 
+const OPERATION_LABEL: Record<string, string> = {
+  OPEN_TABLE_WITH_COMMAND: "Primera comanda de una mesa",
+  CREATE_ORDER: "Apertura de mesa",
+  CREATE_COMMAND: "Comanda",
+  ADD_ORDER_ITEM: "Productos agregados",
+  CANCEL_ORDER_ITEM: "Cancelación de un producto",
+  UPDATE_ORDER_ITEM_STATUS: "Cambio de estado de un plato",
+  UPDATE_PREPARATION_TASK: "Avance de preparación",
+  REGISTER_EXPENSE: "Gasto",
+};
+
 export function SyncIndicator() {
   const [showErrors, setShowErrors] = useState(false);
   const [discardId, setDiscardId] = useState<string | null>(null);
@@ -22,6 +33,7 @@ export function SyncIndicator() {
           <p className="hint">Estas operaciones siguen guardadas solo en este dispositivo: el servidor no las recibió.</p>
           {operations.filter((op) => op.status === "SYNC_ERROR").map((op) => (
             <div className="card" key={op.client_operation_id}>
+              <strong>{OPERATION_LABEL[op.operation_type] ?? "Operación"}</strong>
               <p>{op.last_error ?? "No se pudo sincronizar la operación."}</p>
               <div className="row">
                 <button className="btn secondary" onClick={() => void useQueue.getState().retry(op.client_operation_id)}>Reintentar</button>

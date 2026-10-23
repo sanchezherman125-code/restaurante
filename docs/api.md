@@ -67,6 +67,8 @@ Roles: `Staff` = cualquier usuario autenticado; `Admin`; `Waiter`; `Kitchen`; `G
 | GET | `/api/v1/orders/active` | Staff (`?area=KITCHEN\|GRILL\|WAITER`) | — |
 | POST | `/api/v1/orders` | Waiter/Admin | `client_operation_id` o header `Idempotency-Key` |
 | GET | `/api/v1/orders/{order_id}` | Staff | — |
+| POST | `/api/v1/orders/open-with-command` | Waiter/Admin | `client_operation_id` o header |
+| POST | `/api/v1/orders/{order_id}/cancel` | Waiter dueño/Admin | `client_operation_id` o header |
 | POST | `/api/v1/orders/{order_id}/commands` | Waiter/Admin | `client_operation_id` o header |
 | POST | `/api/v1/orders/{order_id}/items` | Waiter/Admin | — |
 | PATCH | `/api/v1/orders/{order_id}/items/{item_id}` | Waiter/Admin | — |
@@ -76,6 +78,17 @@ Roles: `Staff` = cualquier usuario autenticado; `Admin`; `Waiter`; `Kitchen`; `G
 | GET | `/api/v1/orders/{order_id}/billing` | Waiter dueño / Admin | — |
 | GET/POST | `/api/v1/orders/{order_id}/payments` | Waiter dueño / Admin | `client_operation_id` (body) |
 | POST | `/api/v1/orders/{order_id}/splits` | — | **retirado: responde 410 `SPLITS_DISABLED`** |
+
+**Primera comanda de una mesa.** `POST /orders/open-with-command` (`table_id`, `persons_count`, `items[]`, `notes?`)
+crea el pedido y su primera comanda en **una sola transacción**: si falla cualquier paso (producto agotado o inexistente,
+mesa ocupada, error del servidor) no queda ningún pedido ni comanda, ni se notifica nada. La clave de idempotencia se
+confirma junto con ambas filas, así que reintentar con la misma clave devuelve el mismo resultado sin duplicar. Dos
+dispositivos que envían a la vez la primera comanda de una mesa: uno recibe 201 y el otro 409 `TABLE_ALREADY_OPEN`
+(índice único de ocupación), sin pedidos ni comandas duplicados. La respuesta es el pedido (`id` = id del pedido) con la
+comanda en `command`. `POST /orders` y `POST /orders/{id}/commands` no cambian.
+
+**Liberar una mesa sin pedido.** `POST /orders/{id}/cancel` anula un pedido sin productos activos ni pagos
+(`CANCELLED`, auditoría `ORDER_CANCELLED`); con productos o pagos responde 409 `ORDER_NOT_EMPTY`.
 
 **Cobro.** Ya no existen divisiones. `POST .../payments` rechaza `split_id` con 422
 `SPLIT_PAYMENTS_DISABLED`; el monto nunca puede superar el saldo pendiente (422

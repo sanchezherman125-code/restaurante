@@ -17,7 +17,7 @@ from app.core.deps import (
 from app.core.errors import ConflictError, ForbiddenError, NotFoundError, ValidationAppError
 from app.core.idempotency import execute_idempotent
 from app.models import Order, OrderItem, OrderItemPreparationTask, User
-from app.models.enums import ItemStatus, OrderStatus
+from app.models.enums import ItemStatus, OrderStatus, OrderType
 from app.schemas.orders import (
     CommandCreate,
     CommandOut,
@@ -27,6 +27,7 @@ from app.schemas.orders import (
     OrderCancelRequest,
     OrderCreate,
     OrderItemOut,
+    OrderOpenWithCommand,
     OrderOut,
     TaskStatusRequest,
 )
@@ -130,6 +131,80 @@ def create_order(
     return JSONResponse(status_code=status, content=body)
 
 
+def _audit_command(db, user: User, order: Order, command, device_id: str | None) -> None:
+    audit_actions.audit(
+        db,
+        user_id=user.id,
+        action=audit_actions.COMMAND_CREATED,
+        entity_type="commands",
+        entity_id=command.id,
+        after_data={"order_id": str(order.id), "sequence_number": command.sequence_number, "items": len(command.items)},
+        device_id=device_id,
+    )
+    for item in command.items:
+        audit_actions.audit(
+            db,
+            user_id=user.id,
+            action=audit_actions.ITEM_ADDED,
+            entity_type="order_items",
+            entity_id=item.id,
+            after_data={"name": item.menu_item_name_snapshot, "quantity": item.quantity, "area": item.preparation_area},
+            device_id=device_id,
+        )
+
+
+@router.post("/open-with-command")
+def open_table_with_command(
+    payload: OrderOpenWithCommand,
+    db: DbSession,
+    user: WaiterUser,
+    shift: OpenShift,
+    idem_key: IdempotencyKeyHeader = None,
+    device_id: Annotated[str | None, Header(alias="X-Device-Id")] = None,
+) -> JSONResponse:
+    """Crea el pedido de una mesa y su primera comanda en UNA transacción.
+
+    Si algo falla (producto agotado, mesa ya ocupada, error del servidor) no queda ningún pedido: nunca
+    existe un pedido vacío ocupando la mesa por un fallo entre dos solicitudes. La clave de idempotencia
+    se confirma junto con ambas filas, así que un reintento devuelve el mismo resultado sin duplicar nada.
+    """
+    key = payload.client_operation_id or idem_key
+
+    def operation() -> tuple[int, dict]:
+        ensure_order_in_open_shift(db, shift.id)
+        order = order_service.create_order(
+            db,
+            user,
+            order_type=OrderType.DINE_IN,
+            table_id=payload.table_id,
+            persons_count=payload.persons_count,
+            notes=payload.order_notes,
+            shift_id=shift.id,
+        )
+        audit_actions.audit(
+            db,
+            user_id=user.id,
+            action=audit_actions.ORDER_CREATED,
+            entity_type="orders",
+            entity_id=order.id,
+            after_data={"order_type": order.order_type, "table_id": str(order.table_id or "")},
+            device_id=device_id,
+        )
+        command = order_service.create_command(
+            db, user, order, items=[i.model_dump() for i in payload.items], notes=payload.notes
+        )
+        _audit_command(db, user, order, command, device_id)
+        body = _serialize(order)  # "id" es el del pedido: la cola offline lo usa para encadenar comandas
+        body["command"] = CommandOut.model_validate(command).model_dump(mode="json")
+        return 201, body
+
+    try:
+        status, body = execute_idempotent(db, key, user.id, "OPEN_TABLE_WITH_COMMAND", operation)
+    except IntegrityError as exc:
+        raise ConflictError("TABLE_ALREADY_OPEN", "La mesa ya tiene un pedido abierto.") from exc
+    return JSONResponse(status_code=status, content=body)
+
+
 @router.get("/{order_id}", response_model=OrderOut)
 def get_order(order_id: UUID, db: DbSession, _: StaffUser) -> OrderOut:
     order = order_service.get_active_order(db, order_id)
@@ -157,33 +232,7 @@ def _create_command_impl(
             notes=notes,
             client_operation_id=key,
         )
-        audit_actions.audit(
-            db,
-            user_id=user.id,
-            action=audit_actions.COMMAND_CREATED,
-            entity_type="commands",
-            entity_id=command.id,
-            after_data={
-                "order_id": str(order.id),
-                "sequence_number": command.sequence_number,
-                "items": len(command.items),
-            },
-            device_id=device_id,
-        )
-        for item in command.items:
-            audit_actions.audit(
-                db,
-                user_id=user.id,
-                action=audit_actions.ITEM_ADDED,
-                entity_type="order_items",
-                entity_id=item.id,
-                after_data={
-                    "name": item.menu_item_name_snapshot,
-                    "quantity": item.quantity,
-                    "area": item.preparation_area,
-                },
-                device_id=device_id,
-            )
+        _audit_command(db, user, order, command, device_id)
         body = CommandOut.model_validate(command).model_dump(mode="json")
         body["order"] = _serialize(order)
         return 201, body

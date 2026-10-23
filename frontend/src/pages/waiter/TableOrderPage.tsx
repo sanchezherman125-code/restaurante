@@ -7,6 +7,7 @@ import { ConfirmDialog, Modal } from "../../components/Modal";
 import { EmptyState, SearchField, SkeletonList, StatusBadge } from "../../components/Layout";
 import { formatElapsed, money, useElapsed } from "../../hooks/useElapsed";
 import { AREA_NAME, ITEM_STATUS, ORDER_STATUS, TASK_STATUS } from "../../lib/labels";
+import { ApiError } from "../../api/client";
 import { errorMessage, sendOrQueue } from "../../lib/send";
 import { enqueue } from "../../offline/queue";
 import type { MenuItem, Order, OrderItem } from "../../types/api";
@@ -165,40 +166,25 @@ export function TableOrderPage() {
         );
         queued = outcome.queued;
       } else if (draft) {
-        // Primera comanda de una mesa recién abierta: aquí nace el pedido en el servidor.
-        const orderBody = { order_type: "DINE_IN" as const, table_id: draft.table_id, persons_count: draft.persons_count, notes: null };
-        const created: { order: Order | null } = { order: null };
-        const orderOutcome = await sendOrQueue(
-          { operation_type: "CREATE_ORDER", path: "/api/v1/orders", method: "POST", body: orderBody },
+        // Primera comanda de una mesa recién abierta: el pedido y la comanda nacen en UNA transacción del servidor,
+        // así un fallo a mitad de camino nunca deja un pedido vacío ocupando la mesa.
+        const openBody = { table_id: draft.table_id, persons_count: draft.persons_count, ...payload, order_notes: null };
+        const opened: { order: (Order & { command: unknown }) | null } = { order: null };
+        const outcome = await sendOrQueue(
+          { operation_type: "OPEN_TABLE_WITH_COMMAND", path: "/api/v1/orders/open-with-command", method: "POST", body: openBody },
           async (clientOperationId) => {
-            created.order = await ordersApi.create({ ...orderBody, client_operation_id: clientOperationId }, clientOperationId);
+            opened.order = await ordersApi.openWithCommand(openBody, clientOperationId);
           },
         );
-        if (orderOutcome.queued && orderOutcome.operationId) {
+        if (outcome.queued && outcome.operationId) {
+          // Guardado solo en este dispositivo: las siguientes comandas se encadenan a esta operación.
           addPending({
-            operation_id: orderOutcome.operationId, table_id: draft.table_id, table_name: draft.table_name,
+            operation_id: outcome.operationId, table_id: draft.table_id, table_name: draft.table_name,
             persons_count: draft.persons_count, created_at: Date.now(), server_order_id: null, error: null,
           });
-          await enqueue({
-            operation_type: "CREATE_COMMAND",
-            path: "/api/v1/orders/{orderRef}/commands",
-            method: "POST",
-            body: payload,
-            parent_operation_id: orderOutcome.operationId,
-          });
           queued = true;
-        } else if (created.order) {
-          const newOrder = created.order;
-          const sent: { order: Order | null } = { order: null };
-          const outcome = await sendOrQueue(
-            { operation_type: "CREATE_COMMAND", path: `/api/v1/orders/${newOrder.id}/commands`, method: "POST", body: payload },
-            async (clientOperationId) => {
-              sent.order = (await ordersApi.createCommand(newOrder.id, payload, clientOperationId)).order;
-            },
-          );
-          queued = outcome.queued;
-          // El pedido ya existe: se refleja de inmediato para no volver a crearlo con un segundo envío.
-          const known = sent.order ?? newOrder;
+        } else if (opened.order) {
+          const known: Order = opened.order;
           queryClient.setQueryData<Order[]>(["orders", "active"], (current) => [...(current ?? []).filter((entry) => entry.id !== known.id), known]);
         }
         discardDraft(draft.table_id);
@@ -219,7 +205,14 @@ export function TableOrderPage() {
         void queryClient.invalidateQueries({ queryKey: ["tables"] });
       }
     } catch (error) {
-      toast("error", "No se pudo enviar la comanda", errorMessage(error));
+      if (error instanceof ApiError && error.code === "TABLE_ALREADY_OPEN") {
+        // Otro dispositivo ganó la mesa: nada se creó aquí y el carrito se conserva para reubicarlo.
+        toast("error", "Esta mesa ya fue abierta por otro mesero", "Su comanda no se envió y sigue en pantalla. Elija otra mesa o pida que la liberen.");
+        void queryClient.invalidateQueries({ queryKey: ["tables"] });
+        void queryClient.invalidateQueries({ queryKey: ["orders"] });
+      } else {
+        toast("error", "No se pudo enviar la comanda", errorMessage(error));
+      }
     } finally {
       setSending(false);
     }

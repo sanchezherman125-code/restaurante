@@ -258,4 +258,63 @@ describe("cola offline", () => {
       expect((await listOperations()).map((op) => op.status)).toEqual(["SYNC_ERROR", "SYNCED"]);
     });
   });
+
+  describe("primera comanda de una mesa (pedido + comanda atómicos)", () => {
+    const open = () => ({
+      operation_type: "OPEN_TABLE_WITH_COMMAND" as const,
+      path: "/api/v1/orders/open-with-command",
+      method: "POST" as const,
+      body: { table_id: "t2", persons_count: 2, items: [{ menu_item_id: "m1", quantity: 1 }] },
+    });
+    const followUp = (parent: string) => ({
+      operation_type: "CREATE_COMMAND" as const,
+      path: "/api/v1/orders/{orderRef}/commands",
+      method: "POST" as const,
+      body: { items: [{ menu_item_id: "m2", quantity: 1 }] },
+      parent_operation_id: parent,
+    });
+
+    it("una sola solicitud crea pedido y comanda; la siguiente comanda usa el id del PEDIDO devuelto", async () => {
+      const fetchMock = vi.fn()
+        .mockImplementationOnce(async () => jsonResponse({ id: "order-77", command: { id: "cmd-1" } }))
+        .mockImplementationOnce(async () => jsonResponse({ id: "cmd-2" }));
+      vi.stubGlobal("fetch", fetchMock);
+      const first = await enqueue(open());
+      await enqueue(followUp(first.client_operation_id));
+      const result = await flushQueue();
+      expect(result.synced).toHaveLength(2);
+      const urls = (fetchMock.mock.calls as [string, RequestInit][]).map(([url]) => url);
+      expect(urls).toEqual(["/api/v1/orders/open-with-command", "/api/v1/orders/order-77/commands"]);
+    });
+
+    it("un corte de red reintenta con la misma clave; no existe un estado intermedio con pedido vacío", async () => {
+      const fetchMock = vi.fn()
+        .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+        .mockImplementation(async () => jsonResponse({ id: "order-1" }));
+      vi.stubGlobal("fetch", fetchMock);
+      const op = await enqueue(open());
+      const interrupted = await flushQueue();
+      expect(interrupted.networkFailure).toBe(true);
+      expect((await listOperations())[0]).toMatchObject({ status: "LOCAL_PENDING", client_operation_id: op.client_operation_id });
+      resetBackoff();
+      const resumed = await flushQueue();
+      expect(resumed.synced).toHaveLength(1);
+      const keys = (fetchMock.mock.calls as [string, RequestInit][]).map(([, init]) => (init.headers as Record<string, string>)["Idempotency-Key"]);
+      expect(keys).toEqual([op.client_operation_id, op.client_operation_id]);
+    });
+
+    it("si otro dispositivo ganó la mesa (409), queda SYNC_ERROR y la comanda encadenada no se envía", async () => {
+      const fetchMock = vi.fn().mockImplementation(async () => jsonResponse(
+        { error: { code: "TABLE_ALREADY_OPEN", message: "La mesa ya tiene un pedido abierto.", details: {} } }, 409));
+      vi.stubGlobal("fetch", fetchMock);
+      const first = await enqueue(open());
+      const child = await enqueue(followUp(first.client_operation_id));
+      const result = await flushQueue();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(result.failed.map((op) => op.client_operation_id).sort()).toEqual([first.client_operation_id, child.client_operation_id].sort());
+      const stored = await listOperations();
+      expect(stored.every((op) => op.status === "SYNC_ERROR")).toBe(true);
+      expect(stored.find((op) => op.client_operation_id === first.client_operation_id)?.last_error).toContain("TABLE_ALREADY_OPEN");
+    });
+  });
 });

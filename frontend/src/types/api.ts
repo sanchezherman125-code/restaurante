@@ -319,6 +319,7 @@ export interface QueuedOperation {
   client_operation_id: string;
   operation_type:
     | "CREATE_ORDER"
+    | "OPEN_TABLE_WITH_COMMAND"
     | "CREATE_COMMAND"
     | "ADD_ORDER_ITEM"
     | "CANCEL_ORDER_ITEM"

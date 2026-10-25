@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { expensesApi, openReceipt, uploadReceipt } from "../api/endpoints";
+import { ApiError } from "../api/client";
+import { expensesApi, openReceipt, shiftsApi, uploadReceipt } from "../api/endpoints";
 import { Icon } from "../components/Icon";
 import { EmptyState, PageHeader, SkeletonList } from "../components/Layout";
 import { money } from "../hooks/useElapsed";
@@ -16,6 +17,7 @@ export function ExpensesPage() {
   const [saving, setSaving] = useState(false);
 
   const expenses = useQuery({ queryKey: ["expenses"], queryFn: () => expensesApi.currentShift(), retry: false });
+  const shift = useQuery({ queryKey: ["shifts", "current"], queryFn: shiftsApi.current, retry: false });
 
   async function submit() {
     const value = Number(amount);
@@ -27,6 +29,12 @@ export function ExpensesPage() {
       toast("error", "Falta la descripción");
       return;
     }
+    // El gasto pertenece al turno en que se registra; si se envía más tarde, el servidor no lo pasa a otro turno.
+    const shiftId = shift.data?.status === "OPEN" ? shift.data.id : null;
+    if (!shiftId) {
+      toast("error", "No hay un turno abierto", "Los gastos se registran dentro de un turno abierto.");
+      return;
+    }
     setSaving(true);
     try {
       let receiptUrl: string | null = null;
@@ -34,7 +42,7 @@ export function ExpensesPage() {
         const uploaded = await uploadReceipt(file);
         receiptUrl = uploaded.url;
       }
-      const payload = { amount: value.toFixed(2), description: description.trim(), receipt_url: receiptUrl };
+      const payload = { amount: value.toFixed(2), description: description.trim(), receipt_url: receiptUrl, shift_id: shiftId };
       const outcome = await sendOrQueue(
         {
           operation_type: "REGISTER_EXPENSE",
@@ -53,6 +61,7 @@ export function ExpensesPage() {
       setDescription("");
       setFile(null);
     } catch (error) {
+      if (error instanceof ApiError && error.code === "SHIFT_MISMATCH") void queryClient.invalidateQueries({ queryKey: ["shifts"] });
       toast("error", "No se pudo registrar el gasto", errorMessage(error));
     } finally {
       setSaving(false);

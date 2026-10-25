@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./fixtures";
 import { ensureShiftOpen, login } from "./helpers";
 
 const ROUTES_BY_ROLE: Record<string, string[]> = {

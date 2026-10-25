@@ -28,6 +28,9 @@ La validación local no equivale a una publicación ni a una verificación del e
    - `ALLOWED_HOSTS` contiene el hostname del API, sin esquema.
    - Render genera `JWT_SECRET`. No sustituya este secreto por ejemplos.
    - El PIN inicial debe tener entre 6 y 10 dígitos y ser privado.
+   - Opcional: `DB_POOL_SIZE` (5) y `DB_MAX_OVERFLOW` (10). Su suma es también el máximo de
+     peticiones `/api` atendidas a la vez; el resto espera turno sin ocupar hilos. Debe caber en el
+     límite de conexiones del plan de PostgreSQL.
 4. Suba los cambios al repositorio y sincronice el Blueprint con Render. Los nombres
    `restaurante-api` y `restaurante-front` deben revisarse si ya existen servicios;
    el Blueprint podría asociarse con ellos. El API usa un plan de cómputo pagado.

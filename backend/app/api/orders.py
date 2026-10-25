@@ -9,10 +9,11 @@ from app.core import audit as audit_actions
 from app.core.deps import (
     CurrentUser,
     DbSession,
-    OpenShift,
     StaffUser,
     WaiterUser,
     ensure_order_in_open_shift,
+    ensure_origin_shift,
+    get_open_shift,
 )
 from app.core.errors import ConflictError, ForbiddenError, NotFoundError, ValidationAppError
 from app.core.idempotency import execute_idempotent
@@ -90,19 +91,29 @@ def list_active(
     return [_serialize(o) for o in orders]
 
 
+def _lock_operation_shift(db, origin_shift_id: UUID | None):
+    """Turno abierto, bloqueado, para una operación nueva (las respuestas idempotentes se devuelven antes).
+
+    Una operación generada en un turno anterior (cola offline) se rechaza con 409 ``SHIFT_MISMATCH``.
+    """
+    shift = get_open_shift(db)
+    ensure_order_in_open_shift(db, shift.id)
+    ensure_origin_shift(origin_shift_id, shift.id)
+    return shift
+
+
 @router.post("")
 def create_order(
     payload: OrderCreate,
     db: DbSession,
     user: WaiterUser,
-    shift: OpenShift,
     idem_key: IdempotencyKeyHeader = None,
     device_id: Annotated[str | None, Header(alias="X-Device-Id")] = None,
 ) -> JSONResponse:
     key = payload.client_operation_id or idem_key
 
     def operation() -> tuple[int, dict]:
-        ensure_order_in_open_shift(db, shift.id)
+        shift = _lock_operation_shift(db, payload.shift_id)
         order = order_service.create_order(
             db,
             user,
@@ -158,7 +169,6 @@ def open_table_with_command(
     payload: OrderOpenWithCommand,
     db: DbSession,
     user: WaiterUser,
-    shift: OpenShift,
     idem_key: IdempotencyKeyHeader = None,
     device_id: Annotated[str | None, Header(alias="X-Device-Id")] = None,
 ) -> JSONResponse:
@@ -171,7 +181,7 @@ def open_table_with_command(
     key = payload.client_operation_id or idem_key
 
     def operation() -> tuple[int, dict]:
-        ensure_order_in_open_shift(db, shift.id)
+        shift = _lock_operation_shift(db, payload.shift_id)
         order = order_service.create_order(
             db,
             user,
@@ -220,9 +230,11 @@ def _create_command_impl(
     notes: str | None,
     key: UUID | None,
     device_id: str | None,
+    origin_shift_id: UUID | None = None,
 ) -> tuple[int, dict]:
     def operation() -> tuple[int, dict]:
         ensure_order_in_open_shift(db, order.shift_id)
+        ensure_origin_shift(origin_shift_id, order.shift_id)
         order_service.ensure_order_modifiable(order)
         command = order_service.create_command(
             db,
@@ -253,7 +265,7 @@ def create_command(
     _authorize_order_read(user, order)
     key = payload.client_operation_id or idem_key
     items = [i.model_dump() for i in payload.items]
-    status, body = _create_command_impl(db, user, order, items, payload.notes, key, device_id)
+    status, body = _create_command_impl(db, user, order, items, payload.notes, key, device_id, payload.shift_id)
     return JSONResponse(status_code=status, content=body)
 
 
@@ -316,7 +328,7 @@ def add_items(
     ensure_order_in_open_shift(db, order.shift_id)
     key = payload.client_operation_id or idem_key
     items = [i.model_dump() for i in payload.items]
-    status, body = _create_command_impl(db, user, order, items, payload.notes, key, device_id)
+    status, body = _create_command_impl(db, user, order, items, payload.notes, key, device_id, payload.shift_id)
     return JSONResponse(status_code=status, content=body)
 
 

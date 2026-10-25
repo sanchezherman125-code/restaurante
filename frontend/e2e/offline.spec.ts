@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./fixtures";
 import { ensureShiftOpen, login } from "./helpers";
 
 test("§74 comanda offline queda LOCAL_PENDING, sincroniza sin duplicar y respeta idempotencia", async ({

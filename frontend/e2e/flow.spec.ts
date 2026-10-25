@@ -1,4 +1,4 @@
-import { expect, test, type Browser } from "@playwright/test";
+import { expect, test, type Browser } from "./fixtures";
 import { clickAll, ensureShiftOpen, login } from "./helpers";
 
 async function createContext(browser: Browser) {

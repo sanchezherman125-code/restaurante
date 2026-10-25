@@ -1,10 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, NetworkError } from "../api/client";
+import { ApiError, NetworkError, setTokens } from "../api/client";
 import { flushQueue, resetBackoff } from "../offline/queue";
 import { deleteOperation, listOperations } from "../offline/queue-db";
+import { useSession } from "../stores/session";
+import { fakeJwt } from "../test/jwt";
 import { sendOrQueue } from "./send";
 
 beforeEach(async () => {
+  // La cola solo sincroniza en nombre del usuario en sesión, con un token que le pertenezca.
+  useSession.setState({ user: { id: "w1", username: "ana", display_name: "Ana", role: "WAITER", is_active: true, created_at: "" } });
+  setTokens(fakeJwt("w1"), "refresh");
   resetBackoff();
   vi.restoreAllMocks();
   for (const op of await listOperations()) await deleteOperation(op.client_operation_id);

@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { enqueue, flushQueue, getBackoffMs, resetBackoff } from "./queue";
 import { deleteOperation, listOperations, onQueueChange, putOperation, recoverInterruptedOperations } from "./queue-db";
+import { setTokens } from "../api/client";
 import { useSession } from "../stores/session";
+import { fakeJwt } from "../test/jwt";
 
 function jsonResponse(body: unknown, status = 201): Response {
   return new Response(JSON.stringify(body), {
@@ -11,10 +13,12 @@ function jsonResponse(body: unknown, status = 201): Response {
 }
 
 beforeEach(async () => {
-  useSession.setState({ user: null });
+  // La cola solo envía en nombre del usuario en sesión, con un token que le pertenezca.
+  useSession.setState({ user: { id: "w1", username: "ana", display_name: "Ana", role: "WAITER", is_active: true, created_at: "" } });
   resetBackoff();
   vi.restoreAllMocks();
   localStorage.clear();
+  setTokens(fakeJwt("w1"), "refresh");
   for (const op of await listOperations()) {
     await deleteOperation(op.client_operation_id);
   }
@@ -322,8 +326,7 @@ describe("cola offline", () => {
 describe("sesión expirada durante la sincronización", () => {
   it("conserva la operación pendiente con su mismo UUID en lugar de marcarla como error", async () => {
     useSession.setState({ user: { id: "w1", username: "ana", display_name: "Ana", role: "WAITER", is_active: true, created_at: "" } });
-    localStorage.setItem("restaurante.access", "a");
-    localStorage.setItem("restaurante.refresh", "r");
+    setTokens(fakeJwt("w1"), "r");
     const op = await enqueue({ operation_type: "REGISTER_EXPENSE", path: "/api/v1/expenses", method: "POST", body: {} });
     vi.stubGlobal("fetch", vi.fn()
       .mockResolvedValueOnce(jsonResponse({}, 401))
@@ -338,8 +341,7 @@ describe("sesión expirada durante la sincronización", () => {
 
   it("sin red para renovar el token la operación sigue pendiente", async () => {
     useSession.setState({ user: { id: "w1", username: "ana", display_name: "Ana", role: "WAITER", is_active: true, created_at: "" } });
-    localStorage.setItem("restaurante.access", "a");
-    localStorage.setItem("restaurante.refresh", "r");
+    setTokens(fakeJwt("w1"), "r");
     await enqueue({ operation_type: "REGISTER_EXPENSE", path: "/api/v1/expenses", method: "POST", body: {} });
     vi.stubGlobal("fetch", vi.fn()
       .mockResolvedValueOnce(jsonResponse({}, 401))
@@ -349,5 +351,34 @@ describe("sesión expirada durante la sincronización", () => {
     const [stored] = await listOperations();
     expect(stored.status).toBe("LOCAL_PENDING");
     expect(localStorage.getItem("restaurante.refresh")).toBe("r");
+  });
+});
+
+describe("la sincronización usa exclusivamente al propietario de cada operación", () => {
+  it("si la sesión cambia a otro usuario durante el envío, las operaciones restantes no salen", async () => {
+    const first = await enqueue({ operation_type: "REGISTER_EXPENSE", path: "/api/v1/expenses", method: "POST", body: { n: 1 } });
+    const second = await enqueue({ operation_type: "REGISTER_EXPENSE", path: "/api/v1/expenses", method: "POST", body: { n: 2 } });
+    const fetchMock = vi.fn().mockImplementation(async () => {
+      // Mientras viaja la primera, la sesión pasa a Luis (con su propio token).
+      useSession.setState({ user: { id: "luis", username: "luis", display_name: "Luis", role: "WAITER", is_active: true, created_at: "" } });
+      setTokens(fakeJwt("luis"), "refresh-luis");
+      return jsonResponse({ id: "expense-1" });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await flushQueue();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const stored = new Map((await listOperations()).map((op) => [op.client_operation_id, op]));
+    expect(stored.get(first.client_operation_id)?.status).toBe("SYNCED");
+    expect(stored.get(second.client_operation_id)).toMatchObject({ status: "LOCAL_PENDING", owner_user_id: "w1", attempt_count: 0 });
+  });
+
+  it("no envía si el token guardado pertenece a otro usuario", async () => {
+    await enqueue({ operation_type: "REGISTER_EXPENSE", path: "/api/v1/expenses", method: "POST", body: {} });
+    setTokens(fakeJwt("otro"), "refresh");
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    await flushQueue();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect((await listOperations())[0].status).toBe("LOCAL_PENDING");
   });
 });

@@ -10,7 +10,14 @@ class Base(DeclarativeBase):
     pass
 
 
-engine = create_engine(settings.active_database_url, pool_pre_ping=True, hide_parameters=True, future=True)
+engine = create_engine(
+    settings.active_database_url,
+    pool_pre_ping=True,
+    hide_parameters=True,
+    future=True,
+    pool_size=settings.db_pool_size,
+    max_overflow=settings.db_max_overflow,
+)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False, class_=Session)
 
 

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import uuid
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
@@ -12,6 +13,20 @@ from app.ws.hub import Connection, hub
 
 logger = logging.getLogger("app.ws")
 router = APIRouter()
+
+
+def _active_role(payload: dict) -> str:
+    """Valida sesión y usuario con la base de datos y devuelve el rol vigente.
+
+    Es código síncrono: se ejecuta en un hilo. En el bucle de eventos, esperar una conexión del pool
+    congelaría todo el servidor (HTTP y /health incluidos) mientras el pool estuviera ocupado.
+    """
+    with SessionLocal() as db:
+        validate_session(db, payload)
+        user = db.get(User, uuid.UUID(payload["sub"]))
+        if user is None or not user.is_active:
+            raise ValueError("Usuario inexistente o inactivo")
+        return user.role
 
 
 @router.websocket("/ws")
@@ -36,19 +51,11 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         await websocket.close(code=4401)
         return
 
-    db = SessionLocal()
     try:
-        validate_session(db, payload)
-        user = db.get(User, __import__("uuid").UUID(user_id))
-        if user is None or not user.is_active:
-            await websocket.close(code=4401)
-            return
-        role = user.role
+        role = await asyncio.to_thread(_active_role, payload)
     except Exception:
         await websocket.close(code=4401)
         return
-    finally:
-        db.close()
 
     channels = hub.channels_for_role(role)
 
@@ -81,11 +88,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 message = ""
             try:
                 current_payload = decode_token(token, expected_type="access")
-                with SessionLocal() as session_db:
-                    validate_session(session_db, current_payload)
-                    current_user = session_db.get(User, __import__("uuid").UUID(user_id))
-                    if current_user is None or not current_user.is_active or current_user.role != role:
-                        raise ValueError("Usuario inactivo o permisos cambiados")
+                if await asyncio.to_thread(_active_role, current_payload) != role:
+                    raise ValueError("Permisos cambiados")
             except Exception:
                 await websocket.close(code=4401)
                 break

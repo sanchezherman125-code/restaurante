@@ -155,7 +155,24 @@ misma operación padre. Las cancelaciones y entregas en cola se marcan «pendien
 y no se anuncian como hechas; si el servidor ya muestra el plato cancelado o entregado, manda el servidor.
 Cuando la cola confirma operaciones, la aplicación invalida pedidos, mesas, tableros, gastos y reportes.
 
-## 11. Restricción conocida (§86)
+## 11. Turno de origen y lecturas por usuario
+
+- Gasto, primera comanda y comandas encoladas llevan `shift_id` (turno abierto conocido al generarlas;
+  una comanda encadenada hereda el de su operación padre, y una comanda sobre un pedido, el del pedido).
+  Si al sincronizar ese turno ya terminó, el servidor responde 409 `SHIFT_MISMATCH`: la operación queda
+  en `SYNC_ERROR` con su UUID para revisarla o descartarla. Nunca se crea en el turno siguiente.
+  Sin turno abierto conocido, no se genera ni gasto ni primera comanda.
+- Cada lectura de la cola (`stores/queue.ts`) registra usuario y generación de sesión al empezar. Si al
+  terminar ya no coinciden, se descarta. La reconciliación de `pendingOrders` solo elimina un registro con
+  una lectura completa del usuario actual (`ownerId`), iniciada después de crear el registro.
+- `flushQueue` envía en nombre de un único usuario: se detiene si la sesión o el `sub` del token cambian
+  durante el recorrido, y la operación interrumpida vuelve intacta a `LOCAL_PENDING`.
+- La copia local de consultas (`offline/queryCache.ts`) guarda la última respuesta válida de cada
+  consulta, aunque su último intento haya fallado, y fusiona con lo ya guardado: ni un error ni que React
+  Query descarte una consulta sin uso la borran. La vigencia (24 h) se cuenta por respuesta. Al reconectar,
+  los datos restaurados están vencidos y se vuelven a pedir.
+
+## 12. Restricción conocida (§86)
 
 El offline V1 está pensado para el **salón** (mesas y comandas). Si la operación depende de un
 recurso que no existe localmente (por ejemplo, cobrar sin conexión o una mesa creada en otro

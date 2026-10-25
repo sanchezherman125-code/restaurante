@@ -12,6 +12,8 @@ class OrderCreate(BaseModel):
     table_id: UUID | None = None
     persons_count: int | None = Field(default=None, ge=1, le=100)
     notes: str | None = Field(default=None, max_length=1000)
+    # Turno en que se generó la operación (cola offline). Si ya no es el turno vigente se rechaza: nunca se reasigna.
+    shift_id: UUID | None = None
     client_operation_id: UUID | None = None
 
     @model_validator(mode="after")
@@ -34,6 +36,8 @@ class ItemCreate(BaseModel):
 class CommandCreate(BaseModel):
     items: list[ItemCreate] = Field(min_length=1, max_length=50)
     notes: str | None = Field(default=None, max_length=1000)
+    # Turno en que se generó la operación (cola offline). Si ya no es el turno vigente se rechaza: nunca se reasigna.
+    shift_id: UUID | None = None
     client_operation_id: UUID | None = None
 
     @model_validator(mode="after")
@@ -52,6 +56,8 @@ class OrderOpenWithCommand(BaseModel):
     order_notes: str | None = Field(default=None, max_length=1000)
     items: list[ItemCreate] = Field(min_length=1, max_length=50)
     notes: str | None = Field(default=None, max_length=1000)
+    # Turno en que se generó la operación (cola offline). Si ya no es el turno vigente se rechaza: nunca se reasigna.
+    shift_id: UUID | None = None
     client_operation_id: UUID | None = None
 
     @model_validator(mode="after")

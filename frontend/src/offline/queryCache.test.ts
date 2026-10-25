@@ -77,4 +77,58 @@ describe("copia local de consultas por usuario", () => {
       vi.useRealTimers();
     }
   });
+
+  it("un error de actualización no borra la última respuesta válida, ni tras varias recargas", async () => {
+    let tables: unknown[] = [{ id: "t1" }];
+    let failing = false;
+    const fetchTables = () => (failing ? Promise.reject(new Error("API caída")) : Promise.resolve(tables));
+    const first = new QueryClient();
+    await first.fetchQuery({ queryKey: ["tables"], queryFn: fetchTables });
+    saveQueryCache(first, "ana");
+
+    for (let reload = 0; reload < 3; reload += 1) {
+      // Recarga con la API caída pero navigator.onLine=true: el reintento falla y la consulta queda en error.
+      failing = true;
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      restoreQueryCache(client, "ana");
+      await client.fetchQuery({ queryKey: ["tables"], queryFn: fetchTables, staleTime: 0 }).catch(() => undefined);
+      expect(client.getQueryState(["tables"])?.status).toBe("error");
+      expect(client.getQueryData(["tables"])).toEqual([{ id: "t1" }]);
+      saveQueryCache(client, "ana");
+    }
+
+    const offline = new QueryClient();
+    restoreQueryCache(offline, "ana");
+    expect(offline.getQueryData(["tables"])).toEqual([{ id: "t1" }]);
+    expect(offline.getQueryState(["tables"])?.status).toBe("success");
+
+    // Al reconectar se revalida: la respuesta nueva reemplaza a la guardada.
+    failing = false;
+    tables = [{ id: "t1" }, { id: "t2" }];
+    await offline.fetchQuery({ queryKey: ["tables"], queryFn: fetchTables, staleTime: 0 });
+    saveQueryCache(offline, "ana");
+    const reconnected = new QueryClient();
+    restoreQueryCache(reconnected, "ana");
+    expect(reconnected.getQueryData(["tables"])).toEqual([{ id: "t1" }, { id: "t2" }]);
+  });
+
+  it("que React Query descarte de memoria una consulta sin uso no la borra de la copia", () => {
+    const client = clientWith([[["tables"], [{ id: "t1" }]], [["menu"], { items: ["pollo"] }]]);
+    saveQueryCache(client, "ana");
+    client.removeQueries({ queryKey: ["menu"] });
+    saveQueryCache(client, "ana");
+    const reloaded = new QueryClient();
+    restoreQueryCache(reloaded, "ana");
+    expect(reloaded.getQueryData(["menu"])).toEqual({ items: ["pollo"] });
+  });
+
+  it("los datos restaurados quedan vencidos para pedirse otra vez al haber conexión", () => {
+    saveQueryCache(clientWith([[["tables"], [{ id: "t1" }]]]), "ana");
+    const reloaded = new QueryClient({ defaultOptions: { queries: { staleTime: 5000 } } });
+    restoreQueryCache(reloaded, "ana");
+    const updatedAt = reloaded.getQueryState(["tables"])!.dataUpdatedAt;
+    expect(updatedAt).toBeLessThanOrEqual(Date.now());
+    expect(reloaded.getQueryCache().find({ queryKey: ["tables"] })?.isStaleByTime(0)).toBe(true);
+  });
 });
+

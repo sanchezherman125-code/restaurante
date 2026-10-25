@@ -39,6 +39,11 @@ class Settings(BaseSettings):
 
     business_timezone: str = "America/Lima"
 
+    # Pool de PostgreSQL (mismos valores que el predeterminado de SQLAlchemy). Las peticiones /api en curso
+    # se limitan a pool_size + max_overflow: ninguna espera una conexión ocupando un hilo del servidor.
+    db_pool_size: int = 5
+    db_max_overflow: int = 10
+
     max_receipt_bytes: int = 5 * 1024 * 1024
     allowed_receipt_mimes: tuple[str, ...] = (
         "image/jpeg",

@@ -107,6 +107,18 @@ del plato se deriva: `PREPARING` al iniciar la primera tarea y `READY` cuando **
 actúan sobre las tareas **del área del usuario** (Admin: todas) y `DELIVERED` es del plato.
 Cancelar (`.../cancel`) cancela el plato y todas sus tareas.
 
+**Turno de origen (operaciones offline).** `POST /orders`, `POST /orders/open-with-command`,
+`POST /orders/{id}/commands`, `POST /orders/{id}/items` y `POST /expenses` aceptan `shift_id` opcional:
+el turno en que el cliente generó la operación. Si no coincide con el turno vigente (o con el del pedido,
+en las comandas) la respuesta es 409 `SHIFT_MISMATCH` con `details.origin_shift_id` y
+`details.current_shift_id`. La operación **nunca** se reasigna a otro turno. Sin `shift_id` se mantiene el
+comportamiento anterior (clientes antiguos). El cliente actual siempre lo envía.
+
+**Respuesta idempotente tras cerrar el turno.** El turno abierto se exige dentro de la operación
+idempotente: reenviar el mismo `client_operation_id` (mismo usuario y operación) devuelve la respuesta
+registrada aunque el turno ya haya cerrado. Un identificador nuevo sin turno abierto sigue respondiendo
+404 `NO_OPEN_SHIFT`, y el de otro usuario, 409 `IDEMPOTENCY_KEY_REUSED`.
+
 **Mesas.** Abrir un pedido y desactivar una mesa bloquean la misma fila (`restaurant_tables … FOR UPDATE`):
 una mesa con pedido que ocupa la mesa (`occupies_table`, incluido un pedido pagado con platos sin entregar)
 no se desactiva (409 `TABLE_OCCUPIED`, `details.order_id`) y una mesa inactiva no recibe pedidos nuevos

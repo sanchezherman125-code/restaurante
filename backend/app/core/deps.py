@@ -95,3 +95,14 @@ def ensure_order_in_open_shift(db: Session, shift_id: UUID) -> None:
     # Callers may have read orders/items before waiting on the shift lock.
     # Reload them after acquiring it so concurrent updates cannot use stale state.
     db.expire_all()
+
+
+def ensure_origin_shift(origin_shift_id: UUID | None, shift_id: UUID) -> None:
+    """Una operación generada en otro turno no se reasigna al vigente: queda en conflicto para revisarla."""
+    if origin_shift_id is not None and origin_shift_id != shift_id:
+        raise ApiError(
+            409,
+            "SHIFT_MISMATCH",
+            "La operación se registró durante un turno que ya terminó. No se asigna al turno actual.",
+            {"origin_shift_id": str(origin_shift_id), "current_shift_id": str(shift_id)},
+        )

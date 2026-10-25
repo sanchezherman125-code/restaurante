@@ -51,12 +51,15 @@ export interface CreateOrderPayload {
   table_id?: string | null;
   persons_count?: number | null;
   notes?: string | null;
+  /** Turno en que se generó la operación: el servidor no la asigna a otro. */
+  shift_id?: string;
   client_operation_id?: string;
 }
 
 export interface CommandPayload {
   items: { menu_item_id: string; quantity: number; notes?: string | null; replacement_description?: string | null }[];
   notes?: string | null;
+  shift_id?: string;
   client_operation_id?: string;
 }
 
@@ -66,6 +69,7 @@ export interface OpenTablePayload {
   items: { menu_item_id: string; quantity: number; notes?: string | null }[];
   notes?: string | null;
   order_notes?: string | null;
+  shift_id?: string;
 }
 
 export const ordersApi = {
@@ -129,7 +133,7 @@ export const expensesApi = {
   currentShift: () => api.get<Expense[]>(`${V1}/expenses/current-shift`),
   history: (shiftId?: string) =>
     api.get<Expense[]>(`${V1}/expenses${shiftId ? `?shift_id=${shiftId}` : ""}`),
-  create: (body: { amount: string; description: string; receipt_url?: string | null }, operationId?: string) =>
+  create: (body: { amount: string; description: string; receipt_url?: string | null; shift_id?: string }, operationId?: string) =>
     api.post<Expense>(`${V1}/expenses`, { ...body, client_operation_id: operationId }, { idempotencyKey: operationId }),
 };
 

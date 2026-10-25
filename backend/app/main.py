@@ -25,6 +25,7 @@ from app.api import (
     ws,
 )
 from app.config import settings
+from app.core.admission import DatabaseAdmissionMiddleware
 from app.core.errors import ApiError
 from app.db import Base, engine
 from app.ws.hub import hub
@@ -71,6 +72,8 @@ def create_app() -> FastAPI:
         openapi_url=None if settings.is_production else "/api/openapi.json",
         redoc_url=None,
     )
+    # Primero (capa más interna): solo cuenta peticiones que llegan a los endpoints.
+    app.add_middleware(DatabaseAdmissionMiddleware, limit=settings.db_pool_size + settings.db_max_overflow)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=[h.strip() for h in settings.allowed_hosts.split(",")])
 
     app.add_middleware(

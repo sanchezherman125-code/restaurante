@@ -4,6 +4,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../../api/client";
 import { usePendingOrders } from "../../stores/pendingOrders";
+import { useQueue } from "../../stores/queue";
 import { useSession } from "../../stores/session";
 import { useTableDrafts } from "../../stores/tableDrafts";
 import { useUi } from "../../stores/ui";
@@ -11,7 +12,7 @@ import { TableOrderPage } from "./TableOrderPage";
 import { TablesPage } from "./TablesPage";
 
 const mocks = vi.hoisted(() => ({
-  shift: { status: "OPEN", opened_at: "2026-10-22T21:00:00Z" } as unknown,
+  shift: { id: "shift-A", status: "OPEN", opened_at: "2026-10-22T21:00:00Z" } as unknown,
   activeOrders: [] as unknown[],
   sendOrQueue: vi.fn(),
   enqueue: vi.fn(),
@@ -66,7 +67,7 @@ describe("abrir una mesa no crea un pedido hasta enviar la primera comanda", () 
     sessionStorage.clear();
     localStorage.clear();
     for (const mock of [mocks.sendOrQueue, mocks.enqueue, mocks.openWithCommand, mocks.setQueryData]) mock.mockReset();
-    mocks.shift = { status: "OPEN", opened_at: "2026-10-22T21:00:00Z" };
+    mocks.shift = { id: "shift-A", status: "OPEN", opened_at: "2026-10-22T21:00:00Z" };
     mocks.activeOrders = [];
     useSession.setState({ user: { id: "w1", username: "ana", display_name: "Ana", role: "WAITER", is_active: true, created_at: "" } });
     useTableDrafts.setState({ drafts: {} });
@@ -116,7 +117,8 @@ describe("abrir una mesa no crea un pedido hasta enviar la primera comanda", () 
     expect(mocks.sendOrQueue).toHaveBeenCalledTimes(1);
     expect(mocks.sendOrQueue.mock.calls[0][0]).toMatchObject({ operation_type: "OPEN_TABLE_WITH_COMMAND", path: "/api/v1/orders/open-with-command" });
     const [payload, operationId] = mocks.openWithCommand.mock.calls[0];
-    expect(payload).toMatchObject({ table_id: "table-2", persons_count: 4, items: [{ menu_item_id: "pollo", quantity: 1 }] });
+    expect(payload).toMatchObject({ table_id: "table-2", persons_count: 4, items: [{ menu_item_id: "pollo", quantity: 1 }], shift_id: "shift-A" });
+    expect(mocks.sendOrQueue.mock.calls[0][0].body).toMatchObject({ shift_id: "shift-A" });
     expect(operationId).toBe("op-1");
     expect(mocks.setQueryData).toHaveBeenCalled();
     expect(useTableDrafts.getState().drafts["table-2"]).toBeUndefined();
@@ -140,7 +142,33 @@ describe("abrir una mesa no crea un pedido hasta enviar la primera comanda", () 
     await waitFor(() => expect(mocks.enqueue).toHaveBeenCalledTimes(1));
     expect(mocks.enqueue.mock.calls[0][0]).toMatchObject({
       operation_type: "CREATE_COMMAND", path: "/api/v1/orders/{orderRef}/commands", parent_operation_id: "queued-open",
+      body: { shift_id: "shift-A" },
     });
+  });
+
+  it("una comanda encadenada hereda el turno de la primera aunque ya se conozca otro turno", async () => {
+    usePendingOrders.setState({ records: [{ operation_id: "queued-open", table_id: "table-2", table_name: "Mesa 2",
+      persons_count: 2, created_at: 1, server_order_id: null, error: null }] });
+    useQueue.setState({ operations: [{ client_operation_id: "queued-open", owner_user_id: "w1", operation_type: "OPEN_TABLE_WITH_COMMAND",
+      path: "/api/v1/orders/open-with-command", method: "POST", body: { table_id: "table-2", shift_id: "shift-ANTERIOR", items: [] },
+      parent_operation_id: null, created_at: 1, attempt_count: 1, last_attempt_at: 1, status: "LOCAL_PENDING", last_error: null }],
+    loaded: true, ownerId: "w1", snapshotAt: 0 });
+    const user = userEvent.setup();
+    app("/mesas/table-2");
+    await user.click(screen.getAllByRole("button", { name: "Carta" })[0]); // pestaña de la carta
+    await sendFirstCommand(user);
+    await waitFor(() => expect(mocks.enqueue).toHaveBeenCalledTimes(1));
+    expect(mocks.enqueue.mock.calls[0][0].body).toMatchObject({ shift_id: "shift-ANTERIOR" });
+  });
+
+  it("sin turno abierto conocido no se genera la primera comanda", async () => {
+    mocks.shift = null;
+    useTableDrafts.getState().open({ table_id: "table-2", table_name: "Mesa 2", persons_count: 2, created_at: Date.now() });
+    const user = userEvent.setup();
+    app("/mesas/table-2");
+    await sendFirstCommand(user);
+    expect(mocks.sendOrQueue).not.toHaveBeenCalled();
+    expect(useUi.getState().toasts.map((toast) => toast.title)).toContain("No hay un turno abierto");
   });
 
   it("si otro mesero ya abrió la mesa: conflicto claro, el carrito y el borrador se conservan", async () => {

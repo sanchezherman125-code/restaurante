@@ -5,7 +5,16 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.core import audit as audit_actions
-from app.core.deps import AdminUser, CurrentUser, DbSession, OpenShift, StaffUser, ensure_order_in_open_shift
+from app.core.deps import (
+    AdminUser,
+    CurrentUser,
+    DbSession,
+    OpenShift,
+    StaffUser,
+    ensure_order_in_open_shift,
+    ensure_origin_shift,
+    get_open_shift,
+)
 from app.core.errors import ForbiddenError, NotFoundError
 from app.core.idempotency import execute_idempotent
 from app.models import Expense, PurchaseListItem, User
@@ -50,9 +59,13 @@ def history_expenses(
 
 
 @expenses_router.post("", response_model=ExpenseOut, status_code=201)
-def create_expense(payload: ExpenseCreate, db: DbSession, user: StaffUser, shift: OpenShift) -> JSONResponse:
+def create_expense(payload: ExpenseCreate, db: DbSession, user: StaffUser) -> JSONResponse:
+    # El turno abierto se exige dentro de la operación: una respuesta ya registrada con este UUID se
+    # devuelve aunque el turno haya cerrado después (respuesta perdida), sin crear un gasto nuevo.
     def operation():
+        shift = get_open_shift(db)
         ensure_order_in_open_shift(db, shift.id)
+        ensure_origin_shift(payload.shift_id, shift.id)
         expense = Expense(
             shift_id=shift.id,
             created_by_user_id=user.id,

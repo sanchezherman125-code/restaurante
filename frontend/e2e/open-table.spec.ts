@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./fixtures";
 import { ensureShiftOpen, login } from "./helpers";
 
 test("abrir una mesa y salir sin pedir no crea pedido ni ocupa la mesa", async ({ browser, baseURL }) => {

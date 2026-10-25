@@ -132,3 +132,120 @@ npx playwright test
 | Vitest | 139 aprobadas (96 previas + 43 nuevas) |
 | Build de producción | correcto (lo ejecuta Playwright) |
 | Playwright | 24 aprobadas; 1 omitida: `screenshots.spec.ts`, solo genera capturas con `SHOTS_DIR` (no es funcional, ya se omitía antes) |
+
+---
+
+# Correcciones de la auditoría Codex (sobre `4321dd2`)
+
+Veredicto recibido: **B. Requiere correcciones**: cuatro hallazgos y E2E inestable (11 aprobadas,
+13 fallidas, 1 omitida).
+
+## Hallazgo 1 (P0): pérdida de la copia offline
+
+- **Causa.** `saveQueryCache` guardaba solo consultas con `status === "success"` y reescribía la copia
+  completa. Una actualización fallida (`error`, con datos todavía válidos) la borraba. Lo mismo pasaba
+  cuando React Query descartaba de memoria una consulta sin uso (por ejemplo, la carta mientras se está
+  en el salón).
+- **Solución.** Se guarda toda consulta con datos, normalizada como última respuesta válida. Se fusiona
+  con lo guardado y solo una respuesta más reciente reemplaza a otra. La vigencia de 24 h es por
+  respuesta. Al restaurar, los datos quedan vencidos y se revalidan al reconectar. El servidor sigue
+  autorizando cada operación: la copia solo se usa para mostrar.
+- **Pruebas.** `queryCache.test.ts`: error de actualización con tres recargas seguidas y revalidación,
+  consulta descartada de memoria, datos vencidos. Las dos primeras fallan con `4321dd2`. E2E
+  «Codex 1»: la API cae con `navigator.onLine=true`, se recarga, se esperan los reintentos, se desconecta
+  la red, se recarga otra vez y se revalida al volver.
+
+## Hallazgo 2 (P0): carrera entre sesiones
+
+- **Causa.** `refresh()` publicaba el resultado de una lectura de IndexedDB aunque, al terminar, la
+  sesión fuera de otro usuario. `pendingOrders.sync` tomaba esa lectura como prueba de que la operación
+  de Luis ya no existía y borraba su referencia. Además, `flushQueue` verificaba al propietario antes de
+  un `await`, no inmediatamente antes de enviar.
+- **Solución.** Generación de sesión en `stores/queue.ts`: cada lectura registra usuario y generación y
+  se descarta si cambiaron. `ownerId` indica para quién es la lectura publicada. `pendingOrders` solo
+  elimina registros con una lectura completa del usuario actual, iniciada después de crearlos. `flushQueue`
+  envía en nombre de un único usuario (sesión y `sub` del token) y se detiene si cambian. La operación
+  interrumpida vuelve intacta a `LOCAL_PENDING`.
+- **Pruebas.** `queueSessionRace.test.ts` (lecturas demoradas resueltas en orden inverso: Luis solo ve
+  lo suyo, sus referencias siguen intactas, ninguna operación se borra de IndexedDB) y `queue.test.ts`
+  (cambio de sesión durante el envío; token de otro usuario).
+
+## Hallazgo 3 (P0): operaciones offline trasladadas a otro turno
+
+- **Causa.** Los endpoints asignaban siempre el turno abierto en el momento de sincronizar.
+- **Solución.** Campo opcional `shift_id` (turno de origen) en gastos, apertura de pedido y comandas.
+  Se compara dentro del bloqueo del turno: si no coincide, 409 `SHIFT_MISMATCH`, sin crear nada. En la
+  cola queda `SYNC_ERROR` con su UUID, revisable y descartable. El frontend siempre lo envía: gasto y
+  primera comanda con el turno abierto conocido, comandas con el turno del pedido o el de su operación
+  padre. Sin turno conocido no se generan. Los clientes antiguos sin `shift_id` conservan el
+  comportamiento anterior.
+- **Pruebas.** `test_codex_shift_binding.py`, con PostgreSQL real: turno A con gasto y primera comanda
+  pendientes, cierre de A, apertura de B, sincronización rechazada dos veces, cero registros y reportes de
+  A y B en cero. Además, comanda con otro turno, compatibilidad y sin turno abierto. En el frontend,
+  `OpenTableDraft.test.tsx`.
+
+## Hallazgo 4 (P1): idempotencia de gastos después del cierre
+
+- **Causa.** La dependencia `OpenShift` exigía un turno abierto antes de buscar la respuesta idempotente.
+- **Solución.** En `POST /expenses`, `POST /orders` y `POST /orders/open-with-command` el turno se exige
+  dentro de la operación idempotente. Un reenvío del mismo UUID, mismo usuario y misma operación devuelve
+  la respuesta registrada; un UUID nuevo sin turno abierto sigue respondiendo 404, y el de otro usuario,
+  409.
+- **Pruebas.** Gasto con respuesta perdida, cierre y reenvío: mismo cuerpo y exactamente un gasto.
+  UUID ajeno, UUID nuevo y sin token. Lo mismo para la primera comanda.
+
+## E2E inestable: diagnóstico
+
+Instrumentación: muestreo cada 2 s de `pg_stat_activity`, latencia de `/health` y renderers de Chromium.
+Además, `faulthandler` y un script de carga determinista (`load_repro.py`: 120 peticiones concurrentes
+autenticadas y reconexiones WebSocket durante 40 s contra un uvicorn sobre la base E2E).
+
+- **Reproducción con `4321dd2`.** 11 aprobadas, 13 fallidas, 1 omitida, igual que Codex. A partir de la
+  prueba 12, `pg_stat_activity` muestra 15 transacciones `idle in transaction` (el pool completo), su
+  antigüedad crece sin parar hasta 289 s y `/health` no responde en 3 s. No hay bloqueos SQL.
+- **Defecto del producto (livelock pool/threadpool).** Las dependencias síncronas
+  (`get_current_user`) abren transacción y toman una conexión. El endpoint corre en otro salto al
+  threadpool. Con más peticiones que conexiones, las nuevas ocupan los 40 hilos esperando conexión (30 s)
+  y las que tienen conexión esperan hilo. Con entrada continua de peticiones, nunca avanzan. La WebSocket
+  validaba la sesión con SQLAlchemy síncrono **en el bucle de eventos**, y cada reconexión congelaba el
+  servidor entero mientras esperaba una conexión del pool.
+- **Defecto del arnés.** Los contextos creados con `browser.newContext()` no se cerraban. Las páginas de
+  pruebas anteriores seguían consultando y reconectando (20 a 34 renderers) y su carga acumulada disparaba
+  el livelock.
+- **Correcciones.** `DatabaseAdmissionMiddleware`: como máximo `DB_POOL_SIZE + DB_MAX_OVERFLOW`
+  peticiones `/api` a la vez; el resto espera en el bucle de eventos sin hilo ni conexión. La
+  autenticación de la WebSocket pasa a `asyncio.to_thread`. En el arnés, `e2e/fixtures.ts` cierra los
+  contextos de cada prueba. No se aumentó ningún timeout.
+
+| Carga determinista (40 s) | Correctas | Errores | `/health` OK | `idle in transaction` máx. |
+|---|---|---|---|---|
+| `4321dd2` | 92 | 140 | 0/13 | 15 (sin recuperarse) |
+| Solo corrección WebSocket | 77 | 153 | 0/13 | 15, 26,8 s |
+| WebSocket + admisión | 2228 | 0 | 42/42 (máx. 1,1 s) | 0,14 s; 0 al terminar |
+
+## Resultados finales (2026-10-25, entorno local, PostgreSQL 16 en Docker)
+
+| Verificación | Resultado |
+|---|---|
+| Ruff | sin errores |
+| Pytest (PostgreSQL real) | 233 aprobadas (222 + 7 de turno e idempotencia + 4 de admisión) |
+| Alembic check | sin operaciones pendientes |
+| TypeScript / ESLint | sin errores |
+| Vitest | 148 aprobadas |
+| Build frontend/PWA | correcto (lo ejecuta cada pasada de Playwright) |
+| Playwright completo, 3 pasadas seguidas | 25 aprobadas y 1 omitida en cada una (`screenshots.spec.ts`, requiere `SHOTS_DIR`) |
+| Muestreo en las 3 pasadas | `/health` ≤ 44 ms con el servidor activo; ninguna transacción ociosa ≥ 1 s; 0 conexiones al terminar |
+
+Con `4321dd2` el resultado fue intermitente: una pasada con 11 aprobadas y 13 fallidas (cuelgue
+reproducido), otra con todo aprobado. Las tres pasadas con las correcciones terminaron sin fallos. La
+carga determinista de la tabla anterior es la evidencia de que el cuelgue ya no puede producirse con
+más peticiones que conexiones.
+
+### Pendiente y riesgos residuales
+
+- Las operaciones encoladas antes de esta versión no llevan `shift_id`. El servidor las acepta en el turno
+  vigente (comportamiento anterior) porque su turno de origen no se puede conocer. Conviene sincronizarlas
+  o revisarlas antes de cerrar el primer turno tras la actualización.
+- Con más de `DB_POOL_SIZE + DB_MAX_OVERFLOW` peticiones simultáneas, las demás esperan turno: más
+  latencia en picos, en lugar del cuelgue. Revisar el tamaño del pool según el plan de PostgreSQL.
+- La validación en un dispositivo físico (PWA instalada, red real intermitente) no se hizo en este entorno.

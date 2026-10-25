@@ -1,4 +1,4 @@
-import { expect, test, type APIRequestContext, type Browser, type Page } from "@playwright/test";
+import { expect, test, type APIRequestContext, type Browser, type Page } from "./fixtures";
 import { ensureShiftOpen, login } from "./helpers";
 
 // Mesas 2 y 3 no las usa ningún otro E2E: estas pruebas no dependen del orden de ejecución.
@@ -166,4 +166,45 @@ test("P0-05: una mesa ocupada no se puede desactivar y su pedido no cambia", asy
   const [after] = await activeOrdersOf(api.request, api.headers, "Mesa 3");
   expect(after).toMatchObject({ id: before.id, status: before.status, total: before.total });
   await api.close();
+});
+
+test("Codex 1: la copia local sobrevive a una API caída (con red) y a una recarga sin conexión", async ({ browser }) => {
+  const admin = await (await browser.newContext()).newPage();
+  await login(admin, "admin");
+  await ensureShiftOpen(admin);
+  await admin.context().close();
+
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  await login(page, "mesero1");
+  await page.goto("/mesas");
+  await waitForServiceWorker(page);
+  await expect(page.getByRole("button", { name: /^Mesa 1,/ })).toBeVisible();
+  const userId = await page.evaluate(() => JSON.parse(localStorage.getItem("restaurante.session") ?? "{}").state?.user?.id as string);
+  const cacheKey = `restaurante.queryCache.${userId}`;
+  const cachedTables = () => page.evaluate((key) => (localStorage.getItem(key) ?? "").includes("Mesa 1"), cacheKey);
+  await expect.poll(cachedTables).toBe(true);
+
+  // 1-3. La API deja de responder pero el navegador sigue "en línea": recarga y reintentos fallidos.
+  await context.route("**/api/**", (route) => route.abort("connectionrefused"));
+  await page.reload();
+  await expect(page.getByRole("button", { name: /^Mesa 1,/ })).toBeVisible();
+  await page.waitForTimeout(5000); // reintento de React Query (1) + refresco de la cola
+  expect(await page.evaluate(() => navigator.onLine)).toBe(true);
+  expect(await cachedTables()).toBe(true);
+
+  // 4-5. Desconexión total y nueva recarga: la sesión y los datos locales siguen disponibles.
+  await context.setOffline(true);
+  await page.reload();
+  await expect(page).toHaveURL(/\/mesas$/);
+  await expect(page.getByRole("button", { name: /^Mesa 1,/ })).toBeVisible();
+  expect(await cachedTables()).toBe(true);
+
+  // Al reconectar se revalida con el servidor.
+  await context.unroute("**/api/**");
+  const revalidated = page.waitForResponse((response) => response.url().includes("/api/v1/tables") && response.status() === 200);
+  await context.setOffline(false);
+  await revalidated;
+  await expect(page.getByRole("button", { name: /^Mesa 1,/ })).toBeVisible();
+  await context.close();
 });

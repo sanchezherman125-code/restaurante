@@ -1,4 +1,4 @@
-import { ApiError, NetworkError, apiRequest } from "../api/client";
+import { ApiError, NetworkError, apiRequest, storedTokenSubject } from "../api/client";
 import type { QueuedOperation } from "../types/api";
 import { deleteOperation, getOperation, listOperations, putOperation } from "./queue-db";
 import { useSession } from "../stores/session";
@@ -107,6 +107,9 @@ function orderByDependencies(ops: QueuedOperation[]): QueuedOperation[] {
 
 async function flushQueueImpl(): Promise<FlushResult> {
   const result: FlushResult = { synced: [], failed: [], deferred: [], networkFailure: false };
+  // El envío pertenece a un único usuario: si la sesión cambia a mitad del recorrido, se detiene.
+  const ownerId = useSession.getState().user?.id ?? null;
+  const sameOwner = () => ownerId !== null && useSession.getState().user?.id === ownerId && storedTokenSubject() === ownerId;
 
   if (Date.now() < nextAllowedAttempt) {
       result.deferred = await listOperations();
@@ -118,6 +121,7 @@ async function flushQueueImpl(): Promise<FlushResult> {
 
     for (const op of ops) {
       if (op.status !== "LOCAL_PENDING") continue;
+      if (!sameOwner()) break;
       if (!op.owner_user_id && useSession.getState().user) {
         const legacy = { ...op, status: "SYNC_ERROR" as const,
           last_error: "Operación antigua sin usuario identificado. Verifique el pedido antes de descartarla." };
@@ -171,6 +175,11 @@ async function flushQueueImpl(): Promise<FlushResult> {
       };
       await putOperation(sending);
       byId.set(op.client_operation_id, sending);
+      if (!sameOwner() || sending.owner_user_id !== ownerId) {
+        // La sesión cambió mientras se guardaba el estado: la operación vuelve intacta a la cola.
+        await putOperation({ ...op });
+        break;
+      }
 
       try {
         const response = await apiRequest<Record<string, unknown>>(path, {

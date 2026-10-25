@@ -6,8 +6,10 @@ import { useSession } from "./session";
 
 interface QueueState {
   operations: QueuedOperation[];
-  /** La cola de IndexedDB ya se leyó al menos una vez para el usuario actual. */
+  /** ``operations`` proviene de una lectura completa de IndexedDB hecha para ``ownerId``. */
   loaded: boolean;
+  /** Usuario para el que se leyó ``operations`` (null mientras no hay lectura vigente). */
+  ownerId: string | null;
   /** Momento en que empezó la lectura de ``operations``: lo creado después puede no figurar. */
   snapshotAt: number;
   flushing: boolean;
@@ -20,42 +22,59 @@ interface QueueState {
   setOnline: (online: boolean) => void;
 }
 
-async function currentOperations(): Promise<QueuedOperation[]> {
-  const userId = useSession.getState().user?.id;
-  return (await listOperations()).filter((op) => !op.owner_user_id || op.owner_user_id === userId);
+/** Cambia con cada cambio de usuario: una lectura iniciada en otra generación nunca se aplica. */
+let generation = 0;
+
+const sessionUserId = () => useSession.getState().user?.id ?? null;
+
+/**
+ * Lee la cola y la publica solo si, al terminar, siguen activos el mismo usuario y la misma generación.
+ * Una lectura lenta de Ana que termina después del ingreso de Luis se descarta sin tocar su estado.
+ */
+async function reload(set: (state: Partial<QueueState>) => void): Promise<void> {
+  const readGeneration = generation;
+  const ownerId = sessionUserId();
+  const snapshotAt = Date.now();
+  const all = await listOperations();
+  if (readGeneration !== generation || ownerId !== sessionUserId()) return;
+  set({
+    operations: all.filter((op) => !op.owner_user_id || op.owner_user_id === ownerId),
+    loaded: true,
+    ownerId,
+    snapshotAt,
+  });
 }
 
 export const useQueue = create<QueueState>((set, get) => ({
   operations: [],
   loaded: false,
+  ownerId: null,
   snapshotAt: 0,
   flushing: false,
   online: typeof navigator === "undefined" ? true : navigator.onLine,
-  refresh: async () => {
-    const snapshotAt = Date.now();
-    set({ operations: await currentOperations(), loaded: true, snapshotAt });
-  },
+  refresh: () => reload(set),
   flush: async () => {
     if (get().flushing || !useSession.getState().user) return;
     set({ flushing: true });
     try {
       await flushQueue();
     } finally {
-      set({ flushing: false, operations: await currentOperations() });
+      set({ flushing: false });
+      await reload(set);
     }
   },
   retry: async (id) => {
     await retryOperation(id);
-    set({ operations: await currentOperations() });
+    await reload(set);
     void get().flush();
   },
   discard: async (id) => {
     await discardOperation(id);
-    set({ operations: await currentOperations() });
+    await reload(set);
   },
   clearSynced: async () => {
     await clearSynced();
-    set({ operations: await currentOperations() });
+    await reload(set);
   },
   setOnline: (online) => set({ online }),
 }));
@@ -81,8 +100,9 @@ onQueueChange(() => {
 
 useSession.subscribe((state, previous) => {
   if (state.user?.id !== previous.user?.id) {
-    // Hasta releer IndexedDB no se conocen las operaciones del nuevo usuario.
-    useQueue.setState({ operations: [], loaded: false });
+    // Nueva generación: hasta releer IndexedDB no se conocen las operaciones del nuevo usuario.
+    generation += 1;
+    useQueue.setState({ operations: [], loaded: false, ownerId: null });
     void useQueue.getState().refresh();
     if (state.user) void useQueue.getState().flush();
   }

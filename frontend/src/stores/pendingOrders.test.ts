@@ -36,7 +36,7 @@ describe("registro local de la primera comanda", () => {
   });
 
   it("si la operación se descartó, el registro desaparece y la mesa queda libre", () => {
-    useQueue.setState({ operations: [], loaded: true, snapshotAt: 2000 });
+    useQueue.setState({ operations: [], loaded: true, ownerId: "w1", snapshotAt: 2000 });
     expect(usePendingOrders.getState().records).toEqual([]);
   });
 

@@ -49,7 +49,9 @@ export const usePendingOrders = create<PendingOrdersState>((set, get) => ({
   },
   byTable: (tableId) => get().records.find((r) => r.table_id === tableId && !r.error),
   sync: () => {
-    const { operations, loaded, snapshotAt } = useQueue.getState();
+    const { operations, loaded, ownerId, snapshotAt } = useQueue.getState();
+    // Solo una lectura completa, del usuario actual y posterior al registro prueba que la operación ya no existe.
+    const trustedRead = loaded && ownerId !== null && ownerId === useSession.getState().user?.id;
     const records = get().records;
     let changed = false;
     const next: PendingOrder[] = [];
@@ -57,7 +59,7 @@ export const usePendingOrders = create<PendingOrdersState>((set, get) => ({
       const op = operations.find((o) => o.client_operation_id === record.operation_id);
       if (!op) {
         // Operación descartada o ya limpiada tras sincronizar: el registro local deja de tener sentido.
-        if (loaded && snapshotAt > record.created_at) {
+        if (trustedRead && snapshotAt > record.created_at) {
           changed = true;
           continue;
         }

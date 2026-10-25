@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { menuApi, ordersApi, tablesApi } from "../../api/endpoints";
+import { menuApi, ordersApi, shiftsApi, tablesApi } from "../../api/endpoints";
 import { Icon } from "../../components/Icon";
 import { ConfirmDialog, Modal } from "../../components/Modal";
 import { EmptyState, SearchField, SkeletonList, StatusBadge } from "../../components/Layout";
@@ -105,6 +105,7 @@ export function TableOrderPage() {
   const menu = useQuery({ queryKey: ["menu"], queryFn: menuApi.get });
   const orders = useQuery({ queryKey: ["orders", "active"], queryFn: () => ordersApi.active(), refetchInterval: 15000, retry: false });
   const tables = useQuery({ queryKey: ["tables"], queryFn: tablesApi.list });
+  const currentShift = useQuery({ queryKey: ["shifts", "current"], queryFn: shiftsApi.current, retry: false });
 
   const [categoryId, setCategoryId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -188,31 +189,42 @@ export function TableOrderPage() {
         notes: orderNotes.trim() || null,
       };
 
+      const openShiftId = currentShift.data?.status === "OPEN" ? currentShift.data.id : null;
       let queued = false;
       if (pendingRecord) {
+        // Hereda el turno de la primera comanda pendiente: ambas se aceptan o se rechazan en el mismo turno.
+        const parent = operations.find((op) => op.client_operation_id === pendingRecord.operation_id);
+        const shiftId = (parent?.body as { shift_id?: string } | undefined)?.shift_id ?? openShiftId;
         await enqueue({
           operation_type: "CREATE_COMMAND",
           path: "/api/v1/orders/{orderRef}/commands",
           method: "POST",
-          body: payload,
+          body: shiftId ? { ...payload, shift_id: shiftId } : payload,
           parent_operation_id: pendingRecord.operation_id,
         });
         queued = true;
       } else if (order) {
+        const commandBody = { ...payload, shift_id: order.shift_id };
         const outcome = await sendOrQueue(
           {
             operation_type: "CREATE_COMMAND",
             path: `/api/v1/orders/${order.id}/commands`,
             method: "POST",
-            body: payload,
+            body: commandBody,
           },
-          (clientOperationId) => ordersApi.createCommand(order.id, payload, clientOperationId),
+          (clientOperationId) => ordersApi.createCommand(order.id, commandBody, clientOperationId),
         );
         queued = outcome.queued;
       } else if (draft) {
         // Primera comanda de una mesa recién abierta: el pedido y la comanda nacen en UNA transacción del servidor,
         // así un fallo a mitad de camino nunca deja un pedido vacío ocupando la mesa.
-        const openBody = { table_id: draft.table_id, persons_count: draft.persons_count, ...payload, order_notes: null };
+        // El pedido pertenece al turno abierto al enviarla; si la comanda queda en cola, no pasa a otro turno.
+        const shiftId = openShiftId;
+        if (!shiftId) {
+          toast("error", "No hay un turno abierto", "Pida a un administrador que abra el turno para enviar la comanda.");
+          return;
+        }
+        const openBody = { table_id: draft.table_id, persons_count: draft.persons_count, ...payload, order_notes: null, shift_id: shiftId };
         const opened: { order: (Order & { command: unknown }) | null } = { order: null };
         const outcome = await sendOrQueue(
           { operation_type: "OPEN_TABLE_WITH_COMMAND", path: "/api/v1/orders/open-with-command", method: "POST", body: openBody },
@@ -255,6 +267,7 @@ export function TableOrderPage() {
         void queryClient.invalidateQueries({ queryKey: ["tables"] });
         void queryClient.invalidateQueries({ queryKey: ["orders"] });
       } else {
+        if (error instanceof ApiError && error.code === "SHIFT_MISMATCH") void queryClient.invalidateQueries({ queryKey: ["shifts"] });
         toast("error", "No se pudo enviar la comanda", errorMessage(error));
       }
     } finally {

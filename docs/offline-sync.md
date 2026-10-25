@@ -166,7 +166,16 @@ Cuando la cola confirma operaciones, la aplicación invalida pedidos, mesas, tab
   terminar ya no coinciden, se descarta. La reconciliación de `pendingOrders` solo elimina un registro con
   una lectura completa del usuario actual (`ownerId`), iniciada después de crear el registro.
 - `flushQueue` envía en nombre de un único usuario: se detiene si la sesión o el `sub` del token cambian
-  durante el recorrido, y la operación interrumpida vuelve intacta a `LOCAL_PENDING`.
+  durante el recorrido, y la operación interrumpida vuelve intacta a `LOCAL_PENDING`. La identidad viaja
+  con toda la petición (`apiRequest({ owner })`): antes de enviar, al recibir un 401 y antes del reintento
+  se comprueba que el token guardado siga siendo del dueño. Si cambió, no se renueva con las credenciales
+  del otro usuario, no se reintenta, no se invalida su sesión y la operación vuelve a su dueño
+  (`OwnerChangedError`). Una renovación nunca reemplaza tokens que otra sesión guardó mientras tanto.
+- **Cola de una versión anterior.** Un gasto, una apertura de pedido o una primera comanda sin `shift_id`
+  (guardados por una versión anterior) no se envían automáticamente: quedan en `SYNC_ERROR` con
+  `LEGACY_WITHOUT_SHIFT`, conservados con su UUID para conciliarlos (descartar o volver a registrar). Las
+  comandas encadenadas a una de ellas quedan igual. Las operaciones sobre un pedido existente sí se envían,
+  porque el servidor valida el turno de ese pedido.
 - La copia local de consultas (`offline/queryCache.ts`) guarda la última respuesta válida de cada
   consulta, aunque su último intento haya fallado, y fusiona con lo ya guardado: ni un error ni que React
   Query descarte una consulta sin uso la borran. La vigencia (24 h) se cuenta por respuesta. Al reconectar,

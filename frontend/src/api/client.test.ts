@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  ApiError, NetworkError, apiRequest, getAccessToken, getRefreshToken, isConnectivityError, onSessionExpired, setTokens,
+  ApiError, NetworkError, OwnerChangedError, apiRequest, getAccessToken, getRefreshToken, isConnectivityError, onSessionExpired, setTokens,
   storedTokenSubject,
 } from "./client";
 import { fakeJwt } from "../test/jwt";
@@ -67,5 +67,15 @@ describe("sesión y conectividad", () => {
     expect(isConnectivityError(new ApiError(401, "SESSION_EXPIRED", "x"))).toBe(false);
     setTokens(fakeJwt("user-7"), "refresh");
     expect(storedTokenSubject()).toBe("user-7");
+  });
+});
+
+describe("peticiones ligadas a un usuario", () => {
+  it("no sale si las credenciales guardadas son de otro usuario", async () => {
+    setTokens(fakeJwt("luis"), "refresh-luis");
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(apiRequest("/api/v1/expenses", { method: "POST", owner: "ana" })).rejects.toBeInstanceOf(OwnerChangedError);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

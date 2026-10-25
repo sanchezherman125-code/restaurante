@@ -1,4 +1,4 @@
-import { ApiError, NetworkError, apiRequest, storedTokenSubject } from "../api/client";
+import { ApiError, NetworkError, OwnerChangedError, apiRequest, storedTokenSubject } from "../api/client";
 import type { QueuedOperation } from "../types/api";
 import { deleteOperation, getOperation, listOperations, putOperation } from "./queue-db";
 import { useSession } from "../stores/session";
@@ -82,6 +82,19 @@ function withClientId(op: QueuedOperation): Record<string, unknown> {
   return { ...body, client_operation_id: op.client_operation_id };
 }
 
+/** Operaciones que el servidor asigna al turno vigente: sin turno de origen no pueden enviarse solas. */
+const SHIFT_BOUND_OPERATIONS = new Set<OperationType>(["REGISTER_EXPENSE", "OPEN_TABLE_WITH_COMMAND", "CREATE_ORDER"]);
+
+export const LEGACY_WITHOUT_SHIFT_ERROR =
+  "LEGACY_WITHOUT_SHIFT: Operación guardada por una versión anterior, sin el turno en que se registró. "
+  + "No se envía para no asignarla a otro turno: verifique a qué turno corresponde y descártela o regístrela de nuevo.";
+
+/** Gasto o apertura guardados antes de vincular operaciones a su turno (cola de una versión anterior). */
+export function lacksOriginShift(op: QueuedOperation): boolean {
+  const body = op.body as { shift_id?: unknown } | null;
+  return SHIFT_BOUND_OPERATIONS.has(op.operation_type) && typeof body?.shift_id !== "string";
+}
+
 export interface FlushResult {
   synced: QueuedOperation[];
   failed: QueuedOperation[];
@@ -131,6 +144,14 @@ async function flushQueueImpl(): Promise<FlushResult> {
       }
       if (op.owner_user_id && op.owner_user_id !== useSession.getState().user?.id) {
         result.deferred.push(op);
+        continue;
+      }
+      if (lacksOriginShift(op)) {
+        // Queda conservada (mismo UUID) y señalada para conciliación; nunca se envía automáticamente.
+        const review: QueuedOperation = { ...op, status: "SYNC_ERROR", last_error: LEGACY_WITHOUT_SHIFT_ERROR };
+        await putOperation(review);
+        byId.set(op.client_operation_id, review);
+        result.failed.push(review);
         continue;
       }
 
@@ -186,6 +207,7 @@ async function flushQueueImpl(): Promise<FlushResult> {
           method: sending.method,
           body: withClientId(sending),
           idempotencyKey: sending.client_operation_id,
+          owner: ownerId ?? "", // "" nunca coincide: sin dueño no se envía
         });
         const synced: QueuedOperation = {
           ...sending,
@@ -207,6 +229,13 @@ async function flushQueueImpl(): Promise<FlushResult> {
           backoffMs = backoffMs === 0 ? 1000 : Math.min(backoffMs * 2, 60000);
           nextAllowedAttempt = Date.now() + backoffMs;
           localStorage.setItem(BACKOFF_KEY, JSON.stringify({ backoffMs, nextAllowedAttempt }));
+          break;
+        }
+        if (error instanceof OwnerChangedError) {
+          // Otro usuario tomó la sesión durante el envío o su renovación: la operación vuelve intacta a
+          // su dueño (mismo UUID) y nada se registra a nombre del nuevo usuario.
+          await putOperation({ ...op });
+          byId.set(op.client_operation_id, op);
           break;
         }
         if (error instanceof ApiError && error.code === "SESSION_EXPIRED") {

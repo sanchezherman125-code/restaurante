@@ -20,6 +20,14 @@ export class ApiError extends Error {
   }
 }
 
+/** Las credenciales guardadas ya no son del usuario al que pertenece la petición: no se envía en su nombre. */
+export class OwnerChangedError extends Error {
+  constructor(message = "La sesión cambió de usuario durante el envío.") {
+    super(message);
+    this.name = "OwnerChangedError";
+  }
+}
+
 export class NetworkError extends Error {
   constructor(message = "Sin conexión con el servidor.") {
     super(message);
@@ -62,10 +70,14 @@ interface RequestOptions {
   signal?: AbortSignal;
   formData?: FormData;
   responseType?: "blob";
+  /** Usuario en cuyo nombre viaja la petición (cola offline): ni ella, ni su renovación, ni su reintento
+   * usan credenciales de otro usuario. */
+  owner?: string;
 }
 
-/** Resultado de renovar la sesión: solo "invalid" significa que las credenciales ya no sirven. */
-export type RefreshOutcome = "refreshed" | "invalid" | "unreachable";
+/** Resultado de renovar la sesión: solo "invalid" significa que las credenciales ya no sirven.
+ * "superseded": mientras se renovaba, otra sesión reemplazó los tokens; no se tocan. */
+export type RefreshOutcome = "refreshed" | "invalid" | "unreachable" | "superseded";
 
 let refreshPromise: Promise<RefreshOutcome> | null = null;
 
@@ -83,8 +95,11 @@ export async function refreshSession(): Promise<RefreshOutcome> {
         });
         // Un servidor caído o saturado no invalida la sesión: se reintenta al recuperar la conexión.
         if (response.status >= 500 || response.status === 408 || response.status === 429) return "unreachable";
+        // Otro usuario ingresó mientras tanto: sus tokens no se reemplazan ni se invalidan.
+        if (getRefreshToken() !== refresh) return "superseded";
         if (!response.ok) return "invalid";
         const data = await response.json();
+        if (getRefreshToken() !== refresh) return "superseded";
         setTokens(data.access_token, data.refresh_token);
         return "refreshed";
       } catch {
@@ -136,8 +151,13 @@ export function storedTokenSubject(): string | null {
   }
 }
 
+function ensureOwner(owner: string | undefined): void {
+  if (owner !== undefined && storedTokenSubject() !== owner) throw new OwnerChangedError();
+}
+
 export async function apiRequest<T>(path: string, options: RequestOptions = {}, refreshedOnce = false): Promise<T> {
-  const { method = "GET", body, idempotencyKey, auth = true, signal, formData } = options;
+  const { method = "GET", body, idempotencyKey, auth = true, signal, formData, owner } = options;
+  ensureOwner(owner);
 
   const headers: Record<string, string> = { "X-Device-Id": getDeviceId() };
   if (!formData) headers["Content-Type"] = "application/json";
@@ -161,12 +181,20 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}, 
   }
 
   if (response.status === 401 && auth) {
+    // El 401 es de las credenciales con que salió la petición: si ya hay otro usuario, no se renueva
+    // ni se reintenta con las suyas, y su sesión no se toca.
+    ensureOwner(owner);
     const outcome: RefreshOutcome = refreshedOnce ? "invalid" : await refreshSession();
     if (outcome === "refreshed") {
+      // El reintento vuelve a comprobar al dueño antes de salir (ensureOwner al inicio).
       return apiRequest<T>(path, { ...options, auth: true }, true);
     }
     // Sin conexión para renovar: la sesión local se conserva y la operación queda pendiente.
     if (outcome === "unreachable") throw new NetworkError();
+    if (outcome === "superseded") {
+      if (owner !== undefined) throw new OwnerChangedError();
+      throw new ApiError(401, "SESSION_EXPIRED", "La sesión cambió. Vuelva a intentarlo.");
+    }
     expireSession();
     throw new ApiError(401, "SESSION_EXPIRED", "La sesión expiró. Inicie sesión nuevamente.");
   }

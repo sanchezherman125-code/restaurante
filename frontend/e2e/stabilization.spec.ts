@@ -208,3 +208,122 @@ test("Codex 1: la copia local sobrevive a una API caída (con red) y a una recar
   await expect(page.getByRole("button", { name: /^Mesa 1,/ })).toBeVisible();
   await context.close();
 });
+
+test("Codex 2b: una cola de la versión anterior (sin turno) queda en revisión y no registra nada", async ({ browser, baseURL }) => {
+  const admin = await (await browser.newContext()).newPage();
+  await login(admin, "admin");
+  await ensureShiftOpen(admin);
+
+  const api = await apiAs(browser, baseURL, "admin");
+  const tables = await (await api.request.get("/api/v1/tables", { headers: api.headers })).json();
+  const free = tables.find((table: { status: string; is_active: boolean }) => table.status === "FREE" && table.is_active);
+  const menu = await (await api.request.get("/api/v1/menu", { headers: api.headers })).json();
+  const drink = menu.items.find((item: { name: string }) => item.name === "Inca Kola 500ml");
+  const expensesBefore = (await (await api.request.get("/api/v1/expenses", { headers: api.headers })).json()).length;
+
+  const page = await (await browser.newContext()).newPage();
+  await login(page, "mesero1");
+  await page.goto("/mesas");
+  const userId = await page.evaluate(() => JSON.parse(localStorage.getItem("restaurante.session") ?? "{}").state?.user?.id as string);
+
+  // Cola tal como la dejaba 4321dd2 (sin shift_id), con su referencia de mesa pendiente.
+  await page.evaluate(async ({ owner, tableId, tableName, menuItemId }) => {
+    const base = { owner_user_id: owner, method: "POST", parent_operation_id: null, attempt_count: 1,
+      last_attempt_at: Date.now(), status: "LOCAL_PENDING", last_error: null };
+    const ops = [
+      { ...base, client_operation_id: crypto.randomUUID(), operation_type: "REGISTER_EXPENSE", path: "/api/v1/expenses",
+        body: { amount: "80.00", description: "Gasto legado E2E", receipt_url: null }, created_at: Date.now() },
+      { ...base, client_operation_id: crypto.randomUUID(), operation_type: "OPEN_TABLE_WITH_COMMAND", path: "/api/v1/orders/open-with-command",
+        body: { table_id: tableId, persons_count: 2, items: [{ menu_item_id: menuItemId, quantity: 1, notes: null }], notes: null, order_notes: null },
+        created_at: Date.now() + 1 },
+    ];
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open("restaurante-offline", 1);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction("queue", "readwrite");
+      for (const op of ops) tx.objectStore("queue").put(op);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+    db.close();
+    localStorage.setItem(`restaurante.pendingOrders.${owner}`, JSON.stringify([{ operation_id: ops[1].client_operation_id,
+      table_id: tableId, table_name: tableName, persons_count: 2, created_at: Date.now(), server_order_id: null, error: null }]));
+  }, { owner: userId, tableId: free.id, tableName: free.name, menuItemId: drink.id });
+
+  // "Actualizar el cliente": la versión nueva arranca con esa cola.
+  await page.reload();
+  const indicator = page.getByTestId("sync-indicator");
+  await expect(indicator).toContainText("2 con error", { timeout: 30_000 });
+  await indicator.click();
+  await expect(page.getByRole("dialog")).toContainText("versión anterior");
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("button", { name: new RegExp(`^${free.name},.*error de sincronización`) })).toBeVisible();
+
+  await page.waitForTimeout(3000); // otra ronda de sincronización no debe enviarlas
+  const expenses = await (await api.request.get("/api/v1/expenses", { headers: api.headers })).json();
+  expect(expenses).toHaveLength(expensesBefore);
+  expect(expenses.some((expense: { description: string }) => expense.description === "Gasto legado E2E")).toBe(false);
+  expect(await activeOrdersOf(api.request, api.headers, free.name)).toHaveLength(0);
+  await api.close();
+});
+
+test("Codex 2a: el 401 de una operación de A tras cambiar a B no renueva ni registra nada a nombre de B", async ({ browser, baseURL }) => {
+  const admin = await (await browser.newContext()).newPage();
+  await login(admin, "admin");
+  await ensureShiftOpen(admin);
+  const adminApi = await apiAs(browser, baseURL, "admin");
+  const adminTokens = await (await adminApi.request.post("/api/v1/auth/login", { data: { username: "admin", pin: "1234" } })).json();
+
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  await login(page, "mesero1");
+  await page.goto("/gastos");
+  await expect(page.getByRole("heading", { name: "Gastos del turno" })).toBeVisible();
+
+  // Gasto de A guardado sin conexión.
+  await context.setOffline(true);
+  await page.getByLabel("Monto (S/)").fill("80");
+  await page.getByLabel("Descripción").fill("Gasto 401 E2E");
+  await page.getByRole("button", { name: "Registrar gasto" }).click();
+  await expect(page.getByTestId("sync-indicator")).toContainText("por enviar");
+
+  // Al reconectar, mientras viaja el envío de A, el dispositivo pasa a tener las credenciales de B
+  // y la respuesta a A es 401 (sesión revocada).
+  const refreshCalls: string[] = [];
+  page.on("request", (request) => { if (request.url().includes("/api/v1/auth/refresh")) refreshCalls.push(request.url()); });
+  let intercepted = 0;
+  await context.route("**/api/v1/expenses", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    intercepted += 1;
+    await page.evaluate(({ access, refresh }) => {
+      localStorage.setItem("restaurante.access", access);
+      localStorage.setItem("restaurante.refresh", refresh);
+    }, { access: adminTokens.access_token, refresh: adminTokens.refresh_token });
+    await route.fulfill({ status: 401, contentType: "application/json",
+      body: JSON.stringify({ error: { code: "INVALID_TOKEN", message: "Sesión expirada o revocada.", details: {} } }) });
+  });
+  await context.setOffline(false);
+  await expect.poll(() => intercepted).toBe(1);
+  await page.waitForTimeout(3000); // tiempo para cualquier renovación o reintento indebido
+
+  expect(refreshCalls).toEqual([]);
+  expect(intercepted).toBe(1);
+  const expenses = await (await adminApi.request.get("/api/v1/expenses", { headers: adminApi.headers })).json();
+  expect(expenses.some((expense: { description: string }) => expense.description === "Gasto 401 E2E")).toBe(false);
+  // La operación sigue siendo de A, pendiente y con su UUID; las credenciales de B no se tocaron.
+  const stored = await page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((resolve) => { const r = indexedDB.open("restaurante-offline", 1); r.onsuccess = () => resolve(r.result); });
+    const ops = await new Promise<{ status: string; body: { description?: string } }[]>((resolve) => {
+      const r = db.transaction("queue").objectStore("queue").getAll(); r.onsuccess = () => resolve(r.result);
+    });
+    return { ops: ops.map((op) => ({ status: op.status, description: op.body.description })), refresh: localStorage.getItem("restaurante.refresh") };
+  });
+  expect(stored.ops).toEqual([{ status: "LOCAL_PENDING", description: "Gasto 401 E2E" }]);
+  expect(stored.refresh).toBe(adminTokens.refresh_token);
+  const stillValid = await adminApi.request.post("/api/v1/auth/refresh", { data: { refresh_token: adminTokens.refresh_token } });
+  expect(stillValid.status()).toBe(200);
+  await adminApi.close();
+});

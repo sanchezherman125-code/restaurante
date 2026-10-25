@@ -243,9 +243,60 @@ más peticiones que conexiones.
 
 ### Pendiente y riesgos residuales
 
-- Las operaciones encoladas antes de esta versión no llevan `shift_id`. El servidor las acepta en el turno
-  vigente (comportamiento anterior) porque su turno de origen no se puede conocer. Conviene sincronizarlas
-  o revisarlas antes de cerrar el primer turno tras la actualización.
+- (Resuelto en la segunda auditoría, ver más abajo) Operaciones encoladas sin `shift_id` por versiones anteriores.
 - Con más de `DB_POOL_SIZE + DB_MAX_OVERFLOW` peticiones simultáneas, las demás esperan turno: más
   latencia en picos, en lugar del cuelgue. Revisar el tamaño del pool según el plan de PostgreSQL.
 - La validación en un dispositivo físico (PWA instalada, red real intermitente) no se hizo en este entorno.
+
+---
+
+# Segunda auditoría Codex (sobre `1aebaa1`): dos hallazgos ALTOS
+
+## Hallazgo A: el reintento tras un 401 podía registrar la operación a nombre de otro usuario
+
+- **Causa.** La comprobación de dueño de `flushQueue` ocurría antes de `apiRequest`. Ante un 401,
+  `apiRequest` renovaba con el refresh token guardado *en ese momento* y reintentaba con el access token
+  nuevo, sin comprobar que siguieran siendo del dueño. Si entretanto había ingresado B, el gasto de A
+  quedaba creado por B y la operación local se marcaba `SYNCED`. Además, una renovación de A que
+  terminaba después del ingreso de B reemplazaba los tokens de B.
+- **Solución.** `apiRequest({ owner })` comprueba el `sub` del token guardado antes de enviar, al recibir
+  el 401 (sin renovar ni invalidar la sesión ajena) y antes del reintento. Si no coincide, lanza
+  `OwnerChangedError`, y la cola devuelve la operación intacta (mismo UUID, `LOCAL_PENDING`, dueño
+  original). `refreshSession` devuelve `superseded` y no toca los tokens si otra sesión los reemplazó
+  durante la renovación.
+- **Pruebas.** `queue.test.ts` (A → cambio a B → 401 de A: un solo envío, sin renovación ni reintento,
+  operación de A intacta y sesión de B válida; B ingresa durante la renovación de A; camino legítimo de
+  A con renovación y reintento) y `client.test.ts`. E2E «Codex 2a» con el servidor real: interceptando
+  solo el momento de la respuesta, no hay `/auth/refresh` ni segundo envío, no se crea ningún gasto,
+  la operación sigue pendiente y el refresh token de B sigue siendo válido en el servidor. Con
+  `1aebaa1`, las dos pruebas de cola y el E2E fallan (este registra un segundo envío).
+
+## Hallazgo B: operaciones heredadas sin turno asignadas al turno siguiente
+
+- **Causa.** Por compatibilidad, el servidor solo compara el turno si recibe `shift_id`, y el cliente
+  actualizado enviaba sin revisión las operaciones que una versión anterior había dejado en la cola.
+- **Solución.** En el cliente, un gasto, apertura de pedido o primera comanda sin `shift_id` queda en
+  `SYNC_ERROR` (`LEGACY_WITHOUT_SHIFT`) sin enviarse, también al reintentar. Se conserva con su UUID
+  para conciliarlo, y sus comandas encadenadas quedan igual. El contrato REST no cambia: un cliente
+  antiguo sigue funcionando como antes, pero el cliente actual ya no reasigna su propia cola heredada.
+- **Pruebas.** `queue.test.ts` (formato exacto de `4321dd2`: nada se envía, ni siquiera al reintentar;
+  una comanda sobre un pedido existente sí se envía). E2E «Codex 2b»: cola de la versión anterior
+  inyectada en IndexedDB y recarga del cliente; quedan «2 con error» con el motivo, la mesa aparece
+  «No enviada» y no se crea ningún gasto ni pedido. Con `1aebaa1` las operaciones se sincronizaban
+  (falla).
+
+## Resultados de esta ronda
+
+| Verificación | Resultado |
+|---|---|
+| Ruff | sin errores |
+| Pytest (PostgreSQL real) | 233 aprobadas |
+| Alembic check | sin operaciones pendientes |
+| TypeScript / ESLint | sin errores |
+| Vitest | 154 aprobadas (6 nuevas en esta ronda) |
+| Build frontend/PWA | correcto (lo ejecuta Playwright) |
+| Playwright completo | 27 aprobadas, 1 omitida (`screenshots.spec.ts`, requiere `SHOTS_DIR`) |
+| Muestreo durante Playwright | `/health` ≤ 11 ms con el servidor activo, sin timeouts reales; ninguna transacción ociosa ≥ 1 s; 0 conexiones al terminar |
+
+Pendiente: la validación de la PWA instalada en dispositivos físicos con red intermitente real no se
+hizo en este entorno.

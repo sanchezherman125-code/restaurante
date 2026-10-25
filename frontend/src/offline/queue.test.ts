@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { enqueue, flushQueue, getBackoffMs, resetBackoff } from "./queue";
+import { enqueue, flushQueue, getBackoffMs, resetBackoff, retryOperation } from "./queue";
 import { deleteOperation, listOperations, onQueueChange, putOperation, recoverInterruptedOperations } from "./queue-db";
 import { setTokens } from "../api/client";
 import { useSession } from "../stores/session";
@@ -26,7 +26,7 @@ beforeEach(async () => {
 
 describe("cola offline", () => {
   it("no sincroniza operaciones de otro usuario en un dispositivo compartido", async () => {
-    const op = await enqueue({ operation_type: "REGISTER_EXPENSE", path: "/api/v1/expenses", method: "POST", body: {} });
+    const op = await enqueue({ operation_type: "REGISTER_EXPENSE", path: "/api/v1/expenses", method: "POST", body: { shift_id: "shift-A" } });
     await putOperation({ ...op, owner_user_id: "other-user" });
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
@@ -39,7 +39,7 @@ describe("cola offline", () => {
       operation_type: "REGISTER_EXPENSE",
       path: "/api/v1/expenses",
       method: "POST",
-      body: { amount: "10.00", description: "limón" },
+      body: { shift_id: "shift-A", amount: "10.00", description: "limón" },
     });
 
     expect(op.status).toBe("LOCAL_PENDING");
@@ -57,7 +57,7 @@ describe("cola offline", () => {
       operation_type: "CREATE_ORDER",
       path: "/api/v1/orders",
       method: "POST",
-      body: { order_type: "DINE_IN" },
+      body: { shift_id: "shift-A", order_type: "DINE_IN" },
     });
 
     const result = await flushQueue();
@@ -112,7 +112,7 @@ describe("cola offline", () => {
       operation_type: "CREATE_ORDER",
       path: "/api/v1/orders",
       method: "POST",
-      body: {},
+      body: { shift_id: "shift-A" },
     });
 
     const result = await flushQueue();
@@ -138,7 +138,7 @@ describe("cola offline", () => {
       operation_type: "CREATE_ORDER",
       path: "/api/v1/orders",
       method: "POST",
-      body: { order_type: "DINE_IN" },
+      body: { shift_id: "shift-A", order_type: "DINE_IN" },
     });
     const commandOp = await enqueue({
       operation_type: "CREATE_COMMAND",
@@ -171,7 +171,7 @@ describe("cola offline", () => {
       operation_type: "REGISTER_EXPENSE",
       path: "/api/v1/expenses",
       method: "POST",
-      body: {},
+      body: { shift_id: "shift-A" },
     });
     expect(listener).toHaveBeenCalled();
     unsubscribe();
@@ -268,7 +268,7 @@ describe("cola offline", () => {
       operation_type: "OPEN_TABLE_WITH_COMMAND" as const,
       path: "/api/v1/orders/open-with-command",
       method: "POST" as const,
-      body: { table_id: "t2", persons_count: 2, items: [{ menu_item_id: "m1", quantity: 1 }] },
+      body: { table_id: "t2", persons_count: 2, shift_id: "shift-A", items: [{ menu_item_id: "m1", quantity: 1 }] },
     });
     const followUp = (parent: string) => ({
       operation_type: "CREATE_COMMAND" as const,
@@ -327,7 +327,7 @@ describe("sesión expirada durante la sincronización", () => {
   it("conserva la operación pendiente con su mismo UUID en lugar de marcarla como error", async () => {
     useSession.setState({ user: { id: "w1", username: "ana", display_name: "Ana", role: "WAITER", is_active: true, created_at: "" } });
     setTokens(fakeJwt("w1"), "r");
-    const op = await enqueue({ operation_type: "REGISTER_EXPENSE", path: "/api/v1/expenses", method: "POST", body: {} });
+    const op = await enqueue({ operation_type: "REGISTER_EXPENSE", path: "/api/v1/expenses", method: "POST", body: { shift_id: "shift-A" } });
     vi.stubGlobal("fetch", vi.fn()
       .mockResolvedValueOnce(jsonResponse({}, 401))
       .mockResolvedValueOnce(jsonResponse({ error: { code: "INVALID_TOKEN", message: "x" } }, 401)));
@@ -342,7 +342,7 @@ describe("sesión expirada durante la sincronización", () => {
   it("sin red para renovar el token la operación sigue pendiente", async () => {
     useSession.setState({ user: { id: "w1", username: "ana", display_name: "Ana", role: "WAITER", is_active: true, created_at: "" } });
     setTokens(fakeJwt("w1"), "r");
-    await enqueue({ operation_type: "REGISTER_EXPENSE", path: "/api/v1/expenses", method: "POST", body: {} });
+    await enqueue({ operation_type: "REGISTER_EXPENSE", path: "/api/v1/expenses", method: "POST", body: { shift_id: "shift-A" } });
     vi.stubGlobal("fetch", vi.fn()
       .mockResolvedValueOnce(jsonResponse({}, 401))
       .mockRejectedValueOnce(new TypeError("Failed to fetch")));
@@ -356,8 +356,8 @@ describe("sesión expirada durante la sincronización", () => {
 
 describe("la sincronización usa exclusivamente al propietario de cada operación", () => {
   it("si la sesión cambia a otro usuario durante el envío, las operaciones restantes no salen", async () => {
-    const first = await enqueue({ operation_type: "REGISTER_EXPENSE", path: "/api/v1/expenses", method: "POST", body: { n: 1 } });
-    const second = await enqueue({ operation_type: "REGISTER_EXPENSE", path: "/api/v1/expenses", method: "POST", body: { n: 2 } });
+    const first = await enqueue({ operation_type: "REGISTER_EXPENSE", path: "/api/v1/expenses", method: "POST", body: { shift_id: "shift-A", n: 1 } });
+    const second = await enqueue({ operation_type: "REGISTER_EXPENSE", path: "/api/v1/expenses", method: "POST", body: { shift_id: "shift-A", n: 2 } });
     const fetchMock = vi.fn().mockImplementation(async () => {
       // Mientras viaja la primera, la sesión pasa a Luis (con su propio token).
       useSession.setState({ user: { id: "luis", username: "luis", display_name: "Luis", role: "WAITER", is_active: true, created_at: "" } });
@@ -373,12 +373,108 @@ describe("la sincronización usa exclusivamente al propietario de cada operació
   });
 
   it("no envía si el token guardado pertenece a otro usuario", async () => {
-    await enqueue({ operation_type: "REGISTER_EXPENSE", path: "/api/v1/expenses", method: "POST", body: {} });
+    await enqueue({ operation_type: "REGISTER_EXPENSE", path: "/api/v1/expenses", method: "POST", body: { shift_id: "shift-A" } });
     setTokens(fakeJwt("otro"), "refresh");
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     await flushQueue();
     expect(fetchMock).not.toHaveBeenCalled();
     expect((await listOperations())[0].status).toBe("LOCAL_PENDING");
+  });
+});
+
+describe("renovación y reintento tras 401 en nombre del dueño", () => {
+  const luis = { id: "luis", username: "luis", display_name: "Luis", role: "ADMIN" as const, is_active: true, created_at: "" };
+  const switchToLuis = () => {
+    useSession.setState({ user: luis });
+    setTokens(fakeJwt("luis"), "refresh-luis");
+  };
+
+  it("petición de A, cambio a B y 401 de A: no se renueva ni reintenta con B y nada queda a nombre de B", async () => {
+    const op = await enqueue({ operation_type: "REGISTER_EXPENSE", path: "/api/v1/expenses", method: "POST", body: { shift_id: "shift-A", amount: "80.00" } });
+    const fetchMock = vi.fn().mockImplementationOnce(async () => {
+      switchToLuis(); // la sesión de A se revoca y B ingresa mientras viaja la petición
+      return jsonResponse({ error: { code: "INVALID_TOKEN", message: "Sesión revocada" } }, 401);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await flushQueue();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1); // sin /auth/refresh con la sesión de B y sin reenvío
+    const [stored] = await listOperations();
+    expect(stored).toMatchObject({ client_operation_id: op.client_operation_id, owner_user_id: "w1", status: "LOCAL_PENDING", attempt_count: 0 });
+    expect(localStorage.getItem("restaurante.refresh")).toBe("refresh-luis"); // la sesión de B sigue válida
+    expect(useSession.getState().user?.id).toBe("luis");
+  });
+
+  it("si B ingresa durante la renovación de A, los tokens de B no se reemplazan y no hay reintento", async () => {
+    const op = await enqueue({ operation_type: "REGISTER_EXPENSE", path: "/api/v1/expenses", method: "POST", body: { shift_id: "shift-A" } });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({}, 401))
+      .mockImplementationOnce(async () => {
+        switchToLuis();
+        return jsonResponse({ access_token: fakeJwt("w1"), refresh_token: "refresh-w1-nuevo" }, 200);
+      });
+    vi.stubGlobal("fetch", fetchMock);
+    await flushQueue();
+
+    expect(fetchMock).toHaveBeenCalledTimes(2); // envío original + renovación; ningún reintento
+    expect(localStorage.getItem("restaurante.refresh")).toBe("refresh-luis");
+    const [stored] = await listOperations();
+    expect(stored).toMatchObject({ client_operation_id: op.client_operation_id, owner_user_id: "w1", status: "LOCAL_PENDING" });
+  });
+
+  it("sin cambio de usuario, A renueva y reintenta con el mismo UUID", async () => {
+    const op = await enqueue({ operation_type: "REGISTER_EXPENSE", path: "/api/v1/expenses", method: "POST", body: { shift_id: "shift-A" } });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({}, 401))
+      .mockResolvedValueOnce(jsonResponse({ access_token: fakeJwt("w1"), refresh_token: "refresh-w1-nuevo" }, 200))
+      .mockResolvedValueOnce(jsonResponse({ id: "expense-1" }));
+    vi.stubGlobal("fetch", fetchMock);
+    await flushQueue();
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const retry = fetchMock.mock.calls[2][1] as RequestInit;
+    expect((retry.headers as Record<string, string>)["Idempotency-Key"]).toBe(op.client_operation_id);
+    expect((await listOperations())[0].status).toBe("SYNCED");
+  });
+});
+
+describe("cola guardada por una versión anterior (sin turno de origen)", () => {
+  // Formato exacto de 4321dd2: el cuerpo no trae shift_id.
+  const legacyExpense = { operation_type: "REGISTER_EXPENSE" as const, path: "/api/v1/expenses", method: "POST" as const,
+    body: { amount: "80.00", description: "Carbón", receipt_url: null } };
+  const legacyOpen = { operation_type: "OPEN_TABLE_WITH_COMMAND" as const, path: "/api/v1/orders/open-with-command", method: "POST" as const,
+    body: { table_id: "t2", persons_count: 2, items: [{ menu_item_id: "m1", quantity: 1 }], notes: null, order_notes: null } };
+
+  it("gasto y primera comanda quedan conservados y señalados para conciliación, sin enviarse", async () => {
+    const expense = await enqueue(legacyExpense);
+    const open = await enqueue(legacyOpen);
+    const chained = await enqueue({ operation_type: "CREATE_COMMAND", path: "/api/v1/orders/{orderRef}/commands", method: "POST",
+      body: { items: [{ menu_item_id: "m2", quantity: 1 }] }, parent_operation_id: open.client_operation_id });
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await flushQueue();
+    expect(fetchMock).not.toHaveBeenCalled();
+    const stored = new Map((await listOperations()).map((op) => [op.client_operation_id, op]));
+    for (const op of [expense, open]) {
+      expect(stored.get(op.client_operation_id)).toMatchObject({ status: "SYNC_ERROR", owner_user_id: "w1", body: op.body });
+      expect(stored.get(op.client_operation_id)?.last_error).toMatch(/^LEGACY_WITHOUT_SHIFT/);
+    }
+    expect(stored.get(chained.client_operation_id)?.status).toBe("SYNC_ERROR");
+
+    // Reintentar no la envía: no hay forma segura de saber su turno.
+    await retryOperation(expense.client_operation_id);
+    await flushQueue();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect((await listOperations()).find((op) => op.client_operation_id === expense.client_operation_id)?.status).toBe("SYNC_ERROR");
+  });
+
+  it("una comanda heredada sobre un pedido existente sí se envía: el servidor valida el turno del pedido", async () => {
+    await enqueue({ operation_type: "CREATE_COMMAND", path: "/api/v1/orders/o1/commands", method: "POST",
+      body: { items: [{ menu_item_id: "m2", quantity: 1 }] } });
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ id: "cmd-1" }));
+    vi.stubGlobal("fetch", fetchMock);
+    await flushQueue();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

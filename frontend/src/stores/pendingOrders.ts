@@ -49,26 +49,43 @@ export const usePendingOrders = create<PendingOrdersState>((set, get) => ({
   },
   byTable: (tableId) => get().records.find((r) => r.table_id === tableId && !r.error),
   sync: () => {
-    const operations = useQueue.getState().operations;
+    const { operations, loaded, snapshotAt } = useQueue.getState();
     const records = get().records;
     let changed = false;
-    const next = records.map((record) => {
+    const next: PendingOrder[] = [];
+    for (const record of records) {
       const op = operations.find((o) => o.client_operation_id === record.operation_id);
-      if (!op) return record;
+      if (!op) {
+        // Operación descartada o ya limpiada tras sincronizar: el registro local deja de tener sentido.
+        if (loaded && snapshotAt > record.created_at) {
+          changed = true;
+          continue;
+        }
+        next.push(record);
+        continue;
+      }
       if (op.status === "SYNCED") {
         const serverOrderId = op.server_resource_id ?? null;
-        if (record.server_order_id !== serverOrderId) {
+        if (record.server_order_id !== serverOrderId || record.error) {
           changed = true;
-          return { ...record, server_order_id: serverOrderId };
+          next.push({ ...record, server_order_id: serverOrderId, error: null });
+          continue;
         }
-        return record;
-      }
-      if (op.status === "SYNC_ERROR" && record.error !== (op.last_error ?? "error")) {
+      } else if (op.status === "SYNC_ERROR") {
+        const error = op.last_error ?? "No se pudo sincronizar el pedido.";
+        if (record.error !== error) {
+          changed = true;
+          next.push({ ...record, error });
+          continue;
+        }
+      } else if (record.error) {
+        // Reintento en curso: vuelve a estar pendiente de sincronización.
         changed = true;
-        return { ...record, error: op.last_error ?? "No se pudo sincronizar el pedido." };
+        next.push({ ...record, error: null });
+        continue;
       }
-      return record;
-    });
+      next.push(record);
+    }
     if (changed) {
       save(next);
       set({ records: next });

@@ -14,6 +14,7 @@ from app.models import (
     Order,
     OrderItem,
     OrderItemPreparationTask,
+    RestaurantTable,
     Shift,
     User,
 )
@@ -204,6 +205,25 @@ def lock_order_item(db: Session, order_id: UUID, item_id: UUID) -> OrderItem:
     return item
 
 
+def lock_table(db: Session, table_id: UUID) -> RestaurantTable:
+    """Bloquea la fila de la mesa: abrir un pedido y desactivar la mesa se serializan sobre ella."""
+    table = (
+        db.query(RestaurantTable)
+        .filter(RestaurantTable.id == table_id)
+        .populate_existing()
+        .with_for_update()
+        .one_or_none()
+    )
+    if table is None:
+        raise NotFoundError("TABLE_NOT_FOUND", "Mesa no encontrada.")
+    return table
+
+
+def occupying_order_id(db: Session, table_id: UUID) -> UUID | None:
+    row = db.query(Order.id).filter(Order.table_id == table_id, Order.occupies_table.is_(True)).first()
+    return row.id if row else None
+
+
 def ensure_table_free(db: Session, table_id: UUID) -> None:
     """Una mesa está ocupada mientras su pedido tenga trabajo vivo, esté o no pagado (``occupies_table``)."""
     existing = db.query(Order).filter(Order.table_id == table_id, Order.occupies_table.is_(True)).first()
@@ -233,6 +253,9 @@ def create_order(
                 "PERSONS_COUNT_REQUIRED",
                 "Debe registrar la cantidad de personas.",
             )
+        table = lock_table(db, table_id)
+        if not table.is_active:
+            raise ConflictError("TABLE_INACTIVE", f"{table.name} está desactivada y no admite pedidos nuevos.")
         ensure_table_free(db, table_id)
 
     order = Order(
@@ -280,6 +303,10 @@ def create_command(
         menu_item = db.get(MenuItem, entry["menu_item_id"])
         if menu_item is None or not menu_item.is_active:
             raise NotFoundError("MENU_ITEM_NOT_FOUND", "El producto solicitado no existe.")
+        category = db.get(MenuCategory, menu_item.category_id)
+        if category is None or not category.is_active:
+            # Misma regla que la carta publicada: una categoría desactivada retira todos sus productos.
+            raise NotFoundError("MENU_ITEM_NOT_FOUND", f"'{menu_item.name}' ya no está en la carta.")
         if not menu_item.is_available:
             raise ConflictError(
                 "ITEM_SOLD_OUT",

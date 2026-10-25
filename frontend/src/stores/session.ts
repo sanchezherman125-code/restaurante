@@ -2,7 +2,16 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { Role, User } from "../types/api";
 import { authApi } from "../api/endpoints";
-import { clearTokens, getDeviceId, getAccessToken, setTokens } from "../api/client";
+import {
+  clearTokens,
+  getAccessToken,
+  getDeviceId,
+  getRefreshToken,
+  isConnectivityError,
+  onSessionExpired,
+  setTokens,
+  storedTokenSubject,
+} from "../api/client";
 import { listOperations } from "../offline/queue-db";
 import { useUi } from "./ui";
 import { disablePushNotifications } from "../notifications/push";
@@ -10,9 +19,12 @@ import { disablePushNotifications } from "../notifications/push";
 interface SessionState {
   user: User | null;
   initialized: boolean;
+  /** Identidad recuperada sin conexión: pendiente de confirmar con el servidor al reconectar. */
+  unverified: boolean;
   login: (username: string, pin: string) => Promise<User>;
   logout: () => Promise<void>;
   restore: () => Promise<void>;
+  revalidate: () => Promise<void>;
   hasRole: (...roles: Role[]) => boolean;
 }
 
@@ -21,11 +33,12 @@ export const useSession = create<SessionState>()(
     (set, get) => ({
       user: null,
       initialized: false,
+      unverified: false,
       login: async (username, pin) => {
         const tokens = await authApi.login(username, pin, getDeviceId());
         setTokens(tokens.access_token, tokens.refresh_token);
         const user = await authApi.me();
-        set({ user, initialized: true });
+        set({ user, initialized: true, unverified: false });
         return user;
       },
       logout: async () => {
@@ -44,19 +57,39 @@ export const useSession = create<SessionState>()(
           // la sesión local se limpia igualmente
         }
         clearTokens();
-        set({ user: null });
+        set({ user: null, unverified: false });
       },
       restore: async () => {
-        if (getAccessToken()) {
-          try {
-            const user = await authApi.me();
-            set({ user, initialized: true });
-            return;
-          } catch {
-            clearTokens();
-          }
+        const remembered = get().user;
+        if (!getAccessToken() && !getRefreshToken()) {
+          set({ user: null, initialized: true, unverified: false });
+          return;
         }
-        set({ user: null, initialized: true });
+        try {
+          const user = await authApi.me();
+          set({ user, initialized: true, unverified: false });
+        } catch (error) {
+          if (!isConnectivityError(error)) {
+            // Credenciales rechazadas por el servidor: nunca se reutiliza la identidad guardada.
+            clearTokens();
+            set({ user: null, initialized: true, unverified: false });
+            return;
+          }
+          // Sin conexión: se conservan tokens e identidad solo si pertenecen al mismo usuario.
+          const sameUser = remembered !== null && storedTokenSubject() === remembered.id;
+          set({ user: sameUser ? remembered : null, initialized: true, unverified: sameUser });
+        }
+      },
+      revalidate: async () => {
+        if (!getAccessToken() && !getRefreshToken()) return;
+        try {
+          const user = await authApi.me();
+          set({ user, unverified: false });
+        } catch (error) {
+          if (isConnectivityError(error)) return;
+          clearTokens();
+          set({ user: null, unverified: false });
+        }
       },
       hasRole: (...roles) => {
         const user = get().user;
@@ -69,3 +102,6 @@ export const useSession = create<SessionState>()(
     },
   ),
 );
+
+// El servidor rechazó la sesión: la interfaz vuelve al ingreso; la cola conserva sus operaciones.
+onSessionExpired(() => useSession.setState({ user: null, unverified: false }));

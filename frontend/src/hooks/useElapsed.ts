@@ -46,7 +46,9 @@ export function formatElapsed(totalSeconds: number): string {
 
 export function money(value: string | number | null | undefined): string {
   const amount = typeof value === "number" ? value : Number(value ?? 0);
-  return `S/ ${Number.isFinite(amount) ? amount.toFixed(2) : "0.00"}`;
+  if (!Number.isFinite(amount)) return "S/ 0.00";
+  // Un resultado neto negativo se lee "-S/ 80.00", con el signo delante de la moneda.
+  return amount < 0 && amount.toFixed(2) !== "-0.00" ? `-S/ ${(-amount).toFixed(2)}` : `S/ ${Math.abs(amount).toFixed(2)}`;
 }
 
 export interface LatenessInput {

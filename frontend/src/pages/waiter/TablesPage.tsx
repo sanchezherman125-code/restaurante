@@ -5,7 +5,7 @@ import { ordersApi, shiftsApi, tablesApi } from "../../api/endpoints";
 import { Icon } from "../../components/Icon";
 import { Modal } from "../../components/Modal";
 import { EmptyState, PageHeader, SearchField, SkeletonList } from "../../components/Layout";
-import { usePendingOrders } from "../../stores/pendingOrders";
+import { usePendingOrders, type PendingOrder } from "../../stores/pendingOrders";
 import { useTableDrafts } from "../../stores/tableDrafts";
 import { useUi } from "../../stores/ui";
 import { formatElapsed, money, useElapsed } from "../../hooks/useElapsed";
@@ -23,25 +23,33 @@ function orderProgress(order?: Order): { ready: number; preparing: number; pendi
   };
 }
 
-function TableTile({ table, pending, draft, state, order, onOpen }: {
-  table: RestaurantTable; pending: boolean; draft: boolean; state: OperationalTableState; order?: Order; onOpen: (tableId: string) => void;
+/** Situación local de la primera comanda de la mesa (antes de existir el pedido en el servidor). */
+type LocalOrderState = "PENDING" | "FAILED" | null;
+
+function TableTile({ table, local, draft, state, order, onOpen }: {
+  table: RestaurantTable; local: LocalOrderState; draft: boolean; state: OperationalTableState; order?: Order; onOpen: (tableId: string) => void;
 }) {
   const elapsed = useElapsed(order?.opened_at);
   const progress = orderProgress(order);
+  const pending = local === "PENDING";
+  const failed = local === "FAILED";
   const stateLabel = state === "INACTIVE" ? "inactiva" : state === "OPEN" ? "ocupada" : "libre";
-  const tone = pending ? "pending" : progress.ready > 0 ? "ready" : draft && state === "FREE" ? "draft" : state.toLowerCase();
+  const tone = local ? "pending" : progress.ready > 0 ? "ready" : draft && state === "FREE" ? "draft" : state.toLowerCase();
 
   return (
     <button
       className={`table-tile ${tone}`}
       data-state={state.toLowerCase()}
+      data-local={local?.toLowerCase()}
       onClick={() => onOpen(table.id)}
-      disabled={state === "INACTIVE" || pending}
-      aria-label={`${table.name}, ${stateLabel}${progress.ready > 0 ? `, ${progress.ready} listo para entregar` : ""}${pending ? ", sincronización pendiente" : ""}`}
+      // Una mesa inactiva sin nada local queda bloqueada; con comanda local o pedido vivo sigue accesible.
+      disabled={state === "INACTIVE" && !local}
+      aria-label={`${table.name}, ${stateLabel}${progress.ready > 0 ? `, ${progress.ready} listo para entregar` : ""}${pending ? ", sincronización pendiente" : ""}${failed ? ", error de sincronización" : ""}`}
     >
       <span className="table-top">
         <span className="table-number num">{String(table.number).padStart(2, "0")}</span>
         {pending ? <span className="chip warning"><Icon name="cloud" />Sin enviar</span>
+          : failed ? <span className="chip danger"><Icon name="alert" />No enviada</span>
           : progress.ready > 0 ? <span className="chip success"><Icon name="check" />{progress.ready} listo{progress.ready > 1 ? "s" : ""}</span>
           : state === "OPEN" ? <span className="chip ember"><Icon name="user" />Ocupada</span>
           : draft ? <span className="chip warning"><Icon name="note" />Sin pedido</span>
@@ -51,17 +59,18 @@ function TableTile({ table, pending, draft, state, order, onOpen }: {
       <span className="table-name">{table.name}</span>
       <span className="table-meta">
         {pending ? "Guardada en este dispositivo, aún no llegó al servidor"
+          : failed ? "La primera comanda no se pudo enviar: revise la mesa"
           : state === "OPEN" && order ? (
             <>
               <span><Icon name="clock" />{formatElapsed(elapsed)}</span>
               {order.persons_count ? <span><Icon name="users" />{order.persons_count}</span> : null}
               <strong className="num">{money(order.total)}</strong>
             </>
-          ) : state === "OPEN" ? "Pedido abierto"
+          ) : state === "OPEN" ? (table.is_active ? "Pedido abierto" : "Pedido abierto · mesa desactivada")
           : state === "INACTIVE" ? "No disponible"
           : draft ? "Abierta en este dispositivo, aún sin comanda" : "Toque para abrir"}
       </span>
-      {state === "OPEN" && !pending && (progress.preparing > 0 || progress.pending > 0) ? (
+      {state === "OPEN" && !local && (progress.preparing > 0 || progress.pending > 0) ? (
         <span className="table-progress">
           {progress.preparing > 0 ? <span className="chip info"><Icon name="flame" />{progress.preparing} preparando</span> : null}
           {progress.pending > 0 ? <span className="chip warning"><Icon name="hourglass" />{progress.pending} pendiente{progress.pending > 1 ? "s" : ""}</span> : null}
@@ -69,6 +78,12 @@ function TableTile({ table, pending, draft, state, order, onOpen }: {
       ) : null}
     </button>
   );
+}
+
+function localOrderState(records: PendingOrder[], tableId: string): LocalOrderState {
+  const record = records.find((entry) => entry.table_id === tableId && !entry.server_order_id);
+  if (!record) return null;
+  return record.error ? "FAILED" : "PENDING";
 }
 
 export function TablesPage() {
@@ -90,12 +105,13 @@ export function TablesPage() {
     const normalizedQuery = query.trim().toLocaleLowerCase("es-PE");
     return (tables.data ?? [])
       .map((table) => {
-        const pending = pendingRecords.find((record) => record.table_id === table.id && !record.server_order_id && !record.error);
-        const state: OperationalTableState = !table.is_active ? "INACTIVE" : table.status === "OPEN" || table.order_id ? "OPEN" : "FREE";
-        return { table, pending, state };
+        const local = localOrderState(pendingRecords, table.id);
+        // Un pedido vivo manda sobre la desactivación: sus productos deben poder entregarse y cobrarse.
+        const state: OperationalTableState = table.status === "OPEN" || table.order_id ? "OPEN" : !table.is_active ? "INACTIVE" : "FREE";
+        return { table, local, state };
       })
-      .filter(({ table, pending, state }) => {
-        const matchesFilter = filter === "ALL" || (filter === "FREE" && state === "FREE" && !pending) || (filter === "OPEN" && state === "OPEN") || (filter === "PENDING" && pending);
+      .filter(({ table, local, state }) => {
+        const matchesFilter = filter === "ALL" || (filter === "FREE" && state === "FREE" && !local) || (filter === "OPEN" && state === "OPEN") || (filter === "PENDING" && local !== null);
         const matchesQuery = !normalizedQuery || `${table.name} ${table.number}`.toLocaleLowerCase("es-PE").includes(normalizedQuery);
         return matchesFilter && matchesQuery;
       })
@@ -104,8 +120,8 @@ export function TablesPage() {
 
   const summary = useMemo(() => {
     const rows = (tables.data ?? []).map((table) => {
-      const pending = pendingRecords.some((record) => record.table_id === table.id && !record.server_order_id && !record.error);
-      return !table.is_active ? "INACTIVE" : table.status === "OPEN" || table.order_id ? "OPEN" : pending ? "PENDING" : "FREE";
+      const local = localOrderState(pendingRecords, table.id);
+      return table.status === "OPEN" || table.order_id ? "OPEN" : local ? "PENDING" : !table.is_active ? "INACTIVE" : "FREE";
     });
     return {
       free: rows.filter((state) => state === "FREE").length,
@@ -116,7 +132,8 @@ export function TablesPage() {
 
   if (tables.isLoading) return <div className="page"><PageHeader title="Salón" /><SkeletonList rows={6} height={110} label="Cargando mesas" /></div>;
 
-  if (tables.isError) {
+  // Sin conexión se sigue mostrando la última copia conocida del salón.
+  if (tables.isError && !tables.data) {
     return (
       <EmptyState
         icon="wifiOff"
@@ -129,7 +146,8 @@ export function TablesPage() {
   async function openTable(tableId: string) {
     const table = tables.data?.find((t) => t.id === tableId);
     if (!table) return;
-    if (table.status === "OPEN" || table.order_id || drafts[tableId]) {
+    // Mesa con pedido, borrador o comanda local (pendiente o fallida): se vuelve a ella, nunca se abre otra vez.
+    if (table.status === "OPEN" || table.order_id || drafts[tableId] || localOrderState(pendingRecords, tableId)) {
       navigate(`/mesas/${tableId}`);
       return;
     }
@@ -180,11 +198,11 @@ export function TablesPage() {
         <EmptyState icon="chair" title="No hay mesas registradas" hint="Un administrador debe cargarlas en Mesas." />
       ) : (
         <div className="table-grid">
-          {tableRows.map(({ table, pending, state }) => (
+          {tableRows.map(({ table, local, state }) => (
             <TableTile
               key={table.id}
               table={table}
-              pending={!!pending}
+              local={local}
               draft={Boolean(drafts[table.id])}
               state={state}
               order={activeOrders.data?.find((activeOrder) => activeOrder.table_id === table.id)}

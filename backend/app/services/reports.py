@@ -1,10 +1,12 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time, timedelta, timezone, tzinfo
 from decimal import Decimal
 from uuid import UUID
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.models import (
     Expense,
     Order,
@@ -13,13 +15,78 @@ from app.models import (
     Shift,
     User,
 )
-from app.models.enums import ItemStatus, OrderStatus, TaskStatus
+from app.models.enums import ItemStatus, OrderStatus, ShiftStatus, TaskStatus
+
+# Perú no aplica horario de verano: UTC-5 fijo si el sistema no trae la base de zonas horarias.
+_PERU_FALLBACK = timezone(timedelta(hours=-5), "America/Lima")
 
 
 def _utc(dt: datetime | None) -> datetime | None:
     if dt is None:
         return None
     return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+
+
+def business_tz() -> tzinfo:
+    try:
+        return ZoneInfo(settings.business_timezone)
+    except ZoneInfoNotFoundError:
+        return _PERU_FALLBACK
+
+
+def local_day_bounds(date_from: date | None, date_to: date | None) -> tuple[datetime | None, datetime | None]:
+    """Rango [inicio, fin) en hora local del negocio: ``date_to`` incluye su día completo."""
+    tz = business_tz()
+    start = datetime.combine(date_from, time.min, tzinfo=tz) if date_from else None
+    end = datetime.combine(date_to + timedelta(days=1), time.min, tzinfo=tz) if date_to else None
+    return start, end
+
+
+def select_shifts(
+    db: Session,
+    *,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    shift_id: UUID | None = None,
+    scope: str | None = None,
+) -> list[Shift]:
+    """Turnos que abarca un reporte; ventas, gastos, productos y preparación se calculan sobre los mismos.
+
+    Prioridad: ``shift_id`` → rango de fechas → ``scope=all`` (historial completo) → turno actual.
+    Un turno pertenece al día local (America/Lima) en que se abrió, aunque termine después de medianoche.
+    Turno actual: el abierto; si no hay ninguno, el último registrado (el panel lo indica explícitamente).
+    """
+    if shift_id is not None:
+        shift = db.get(Shift, shift_id)
+        return [shift] if shift is not None else []
+    if date_from or date_to:
+        start, end = local_day_bounds(date_from, date_to)
+        query = db.query(Shift)
+        if start is not None:
+            query = query.filter(Shift.opened_at >= start)
+        if end is not None:
+            query = query.filter(Shift.opened_at < end)
+        return query.order_by(Shift.opened_at.asc()).all()
+    if scope == "all":
+        return db.query(Shift).order_by(Shift.opened_at.asc()).all()
+    current = (
+        db.query(Shift)
+        .filter(Shift.status == ShiftStatus.OPEN.value)
+        .order_by(Shift.opened_at.desc())
+        .first()
+    )
+    if current is None:
+        current = db.query(Shift).order_by(Shift.opened_at.desc()).first()
+    return [current] if current else []
+
+
+def orders_of_shifts(db: Session, shift_ids: list[UUID], waiter_id: UUID | None = None) -> list[Order]:
+    if not shift_ids:
+        return []
+    query = db.query(Order).filter(Order.shift_id.in_(shift_ids))
+    if waiter_id is not None:
+        query = query.filter(Order.created_by_waiter_id == waiter_id)
+    return query.order_by(Order.created_at.asc()).all()
 
 
 def preparation_metrics(db: Session, orders: list[Order]) -> dict:
@@ -123,9 +190,8 @@ def orders_of_shift(db: Session, shift_id: UUID) -> list[Order]:
 def total_expenses_of(db: Session, shift_ids: list[UUID]) -> Decimal:
     if not shift_ids:
         return Decimal("0.00")
-    return db.query(func.coalesce(func.sum(Expense.amount), 0)).filter(
-        Expense.shift_id.in_(shift_ids)
-    ).scalar() or Decimal("0.00")
+    total = db.query(func.coalesce(func.sum(Expense.amount), 0)).filter(Expense.shift_id.in_(shift_ids)).scalar()
+    return Decimal(total or 0).quantize(Decimal("0.01"))
 
 
 def build_shift_snapshot(db: Session, shift: Shift) -> dict:

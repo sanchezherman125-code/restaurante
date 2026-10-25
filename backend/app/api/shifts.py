@@ -105,10 +105,11 @@ def shift_history(
     waiter_id: UUID | None = Query(default=None),
 ) -> list[ShiftOut]:
     query = db.query(Shift).filter(Shift.status == ShiftStatus.CLOSED.value)
-    if date_from:
-        query = query.filter(Shift.opened_at >= datetime.combine(date_from, datetime.min.time(), tzinfo=UTC))
-    if date_to:
-        query = query.filter(Shift.opened_at <= datetime.combine(date_to, datetime.max.time(), tzinfo=UTC))
+    start, end = report_service.local_day_bounds(date_from, date_to)
+    if start is not None:
+        query = query.filter(Shift.opened_at >= start)
+    if end is not None:
+        query = query.filter(Shift.opened_at < end)
     shifts = query.order_by(Shift.opened_at.desc()).all()
     if waiter_id is not None:
         filtered = []

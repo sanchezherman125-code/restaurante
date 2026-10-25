@@ -6,6 +6,10 @@ import { useSession } from "./session";
 
 interface QueueState {
   operations: QueuedOperation[];
+  /** La cola de IndexedDB ya se leyó al menos una vez para el usuario actual. */
+  loaded: boolean;
+  /** Momento en que empezó la lectura de ``operations``: lo creado después puede no figurar. */
+  snapshotAt: number;
   flushing: boolean;
   online: boolean;
   refresh: () => Promise<void>;
@@ -23,10 +27,13 @@ async function currentOperations(): Promise<QueuedOperation[]> {
 
 export const useQueue = create<QueueState>((set, get) => ({
   operations: [],
+  loaded: false,
+  snapshotAt: 0,
   flushing: false,
   online: typeof navigator === "undefined" ? true : navigator.onLine,
   refresh: async () => {
-    set({ operations: await currentOperations() });
+    const snapshotAt = Date.now();
+    set({ operations: await currentOperations(), loaded: true, snapshotAt });
   },
   flush: async () => {
     if (get().flushing || !useSession.getState().user) return;
@@ -74,6 +81,8 @@ onQueueChange(() => {
 
 useSession.subscribe((state, previous) => {
   if (state.user?.id !== previous.user?.id) {
+    // Hasta releer IndexedDB no se conocen las operaciones del nuevo usuario.
+    useQueue.setState({ operations: [], loaded: false });
     void useQueue.getState().refresh();
     if (state.user) void useQueue.getState().flush();
   }

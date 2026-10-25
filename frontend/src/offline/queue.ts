@@ -200,6 +200,13 @@ async function flushQueueImpl(): Promise<FlushResult> {
           localStorage.setItem(BACKOFF_KEY, JSON.stringify({ backoffMs, nextAllowedAttempt }));
           break;
         }
+        if (error instanceof ApiError && error.code === "SESSION_EXPIRED") {
+          // Requiere volver a ingresar: la operación se conserva intacta (mismo UUID) para ese momento.
+          const waiting: QueuedOperation = { ...sending, status: "LOCAL_PENDING", last_error: "Esperando nuevo ingreso del usuario." };
+          await putOperation(waiting);
+          byId.set(op.client_operation_id, waiting);
+          break;
+        }
         if (error instanceof ApiError) {
           const failed: QueuedOperation = {
             ...sending,

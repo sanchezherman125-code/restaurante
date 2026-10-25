@@ -1,10 +1,10 @@
 from uuid import UUID
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
 from app.core import audit as audit_actions
 from app.core.deps import AdminUser, AreaUser, DbSession, StaffUser
-from app.core.errors import ConflictError, NotFoundError, ValidationAppError
+from app.core.errors import ConflictError, ForbiddenError, NotFoundError, ValidationAppError
 from app.models import MenuCategory, MenuItem
 from app.models.enums import AvailabilityStatus, PreparationArea
 from app.schemas.menu import (
@@ -31,14 +31,26 @@ def _item_out(item: MenuItem) -> MenuItemOut:
 
 
 @router.get("", response_model=MenuOut)
-def get_menu(db: DbSession, _: StaffUser) -> MenuOut:
-    categories = (
-        db.query(MenuCategory)
-        .filter(MenuCategory.is_active.is_(True))
-        .order_by(MenuCategory.sort_order.asc(), MenuCategory.name.asc())
-        .all()
-    )
-    items = db.query(MenuItem).filter(MenuItem.is_active.is_(True)).order_by(MenuItem.name.asc()).all()
+def get_menu(
+    db: DbSession,
+    user: StaffUser,
+    include_inactive: bool = Query(default=False),
+) -> MenuOut:
+    """Carta vendible: productos activos de categorías activas (lo mismo que acepta una comanda).
+
+    ``include_inactive`` (solo administrador) devuelve también lo desactivado para poder reactivarlo.
+    """
+    if include_inactive and user.role != "ADMIN":
+        raise ForbiddenError("MENU_INACTIVE_FORBIDDEN", "Solo el administrador ve la carta desactivada.")
+    categories_query = db.query(MenuCategory)
+    items_query = db.query(MenuItem)
+    if not include_inactive:
+        categories_query = categories_query.filter(MenuCategory.is_active.is_(True))
+        items_query = items_query.join(MenuCategory, MenuCategory.id == MenuItem.category_id).filter(
+            MenuItem.is_active.is_(True), MenuCategory.is_active.is_(True)
+        )
+    categories = categories_query.order_by(MenuCategory.sort_order.asc(), MenuCategory.name.asc()).all()
+    items = items_query.order_by(MenuItem.name.asc()).all()
     return MenuOut(
         categories=[CategoryOut.model_validate(c) for c in categories],
         items=[_item_out(i) for i in items],
@@ -72,6 +84,8 @@ def update_category(category_id: UUID, payload: CategoryUpdate, db: DbSession, _
         setattr(category, key, value)
     db.commit()
     db.refresh(category)
+    # Activar o desactivar una categoría cambia la carta de todos los dispositivos.
+    hub.broadcast("menu.changed", {"category_id": str(category.id)}, {"admin", "waiters", "kitchen", "grill"})
     return CategoryOut.model_validate(category)
 
 
@@ -95,6 +109,7 @@ def create_item(payload: MenuItemCreate, db: DbSession, _: AdminUser) -> MenuIte
         prep.sync_menu_steps(db, item, steps)
     db.commit()
     db.refresh(item)
+    hub.broadcast("menu.changed", {"menu_item_id": str(item.id)}, {"admin", "waiters", "kitchen", "grill"})
     return _item_out(item)
 
 

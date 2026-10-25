@@ -318,3 +318,36 @@ describe("cola offline", () => {
     });
   });
 });
+
+describe("sesión expirada durante la sincronización", () => {
+  it("conserva la operación pendiente con su mismo UUID en lugar de marcarla como error", async () => {
+    useSession.setState({ user: { id: "w1", username: "ana", display_name: "Ana", role: "WAITER", is_active: true, created_at: "" } });
+    localStorage.setItem("restaurante.access", "a");
+    localStorage.setItem("restaurante.refresh", "r");
+    const op = await enqueue({ operation_type: "REGISTER_EXPENSE", path: "/api/v1/expenses", method: "POST", body: {} });
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(jsonResponse({}, 401))
+      .mockResolvedValueOnce(jsonResponse({ error: { code: "INVALID_TOKEN", message: "x" } }, 401)));
+    const result = await flushQueue();
+    expect(result.failed).toHaveLength(0);
+    const [stored] = await listOperations();
+    expect(stored.client_operation_id).toBe(op.client_operation_id);
+    expect(stored.status).toBe("LOCAL_PENDING");
+    expect(useSession.getState().user).toBeNull();
+  });
+
+  it("sin red para renovar el token la operación sigue pendiente", async () => {
+    useSession.setState({ user: { id: "w1", username: "ana", display_name: "Ana", role: "WAITER", is_active: true, created_at: "" } });
+    localStorage.setItem("restaurante.access", "a");
+    localStorage.setItem("restaurante.refresh", "r");
+    await enqueue({ operation_type: "REGISTER_EXPENSE", path: "/api/v1/expenses", method: "POST", body: {} });
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(jsonResponse({}, 401))
+      .mockRejectedValueOnce(new TypeError("Failed to fetch")));
+    const result = await flushQueue();
+    expect(result.networkFailure).toBe(true);
+    const [stored] = await listOperations();
+    expect(stored.status).toBe("LOCAL_PENDING");
+    expect(localStorage.getItem("restaurante.refresh")).toBe("r");
+  });
+});

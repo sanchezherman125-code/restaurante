@@ -34,6 +34,8 @@ export const tablesApi = {
 
 export const menuApi = {
   get: () => api.get<Menu>(`${V1}/menu`),
+  /** Solo administrador: incluye categorías y productos desactivados para poder reactivarlos. */
+  getAll: () => api.get<Menu>(`${V1}/menu?include_inactive=true`),
   createCategory: (body: { name: string; sort_order?: number }) =>
     api.post(`${V1}/menu/categories`, body),
   updateCategory: (id: string, body: Record<string, unknown>) =>

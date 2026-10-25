@@ -70,6 +70,8 @@ def create_expense(payload: ExpenseCreate, db: DbSession, user: StaffUser, shift
             entity_id=expense.id,
             after_data={"amount": str(payload.amount), "description": payload.description},
         )
+        # El panel del administrador recalcula gastos y resultado neto al confirmarse el gasto.
+        hub.after_commit(db, "expense.created", {"expense_id": str(expense.id), "shift_id": str(shift.id)}, {"admin"})
         return 201, _expense_out(db, expense).model_dump(mode="json")
 
     status, body = execute_idempotent(db, payload.client_operation_id, user.id, "REGISTER_EXPENSE", operation)

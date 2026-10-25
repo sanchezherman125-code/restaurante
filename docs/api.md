@@ -47,13 +47,13 @@ Roles: `Staff` = cualquier usuario autenticado; `Admin`; `Waiter`; `Kitchen`; `G
 |---|---|---|---|
 | GET | `/api/v1/tables` | Staff | lista con estado (`libre`/`ocupada`) |
 | POST | `/api/v1/tables` | Admin | crea mesa |
-| PATCH | `/api/v1/tables/{table_id}` | Admin | edita/activa/desactiva |
+| PATCH | `/api/v1/tables/{table_id}` | Admin | edita/activa/desactiva (409 `TABLE_OCCUPIED` si tiene un pedido vivo) |
 
 ### Carta (§50)
 
 | Método | Ruta | Rol |
 |---|---|---|
-| GET | `/api/v1/menu` | Staff |
+| GET | `/api/v1/menu` | Staff (`?include_inactive=true` solo Admin) |
 | GET/POST | `/api/v1/menu/categories` | Staff / Admin |
 | PATCH | `/api/v1/menu/categories/{category_id}` | Admin |
 | POST | `/api/v1/menu/items` | Admin |
@@ -107,6 +107,17 @@ del plato se deriva: `PREPARING` al iniciar la primera tarea y `READY` cuando **
 actúan sobre las tareas **del área del usuario** (Admin: todas) y `DELIVERED` es del plato.
 Cancelar (`.../cancel`) cancela el plato y todas sus tareas.
 
+**Mesas.** Abrir un pedido y desactivar una mesa bloquean la misma fila (`restaurant_tables … FOR UPDATE`):
+una mesa con pedido que ocupa la mesa (`occupies_table`, incluido un pedido pagado con platos sin entregar)
+no se desactiva (409 `TABLE_OCCUPIED`, `details.order_id`) y una mesa inactiva no recibe pedidos nuevos
+(409 `TABLE_INACTIVE`). Un pedido vivo en una mesa ya inactiva (datos anteriores) sigue accesible y
+`GET /tables` lo informa con `status: "OPEN"`.
+
+**Carta publicada.** `GET /menu` devuelve los productos activos **de categorías activas**, que es exactamente
+lo que acepta una comanda: un producto de una categoría desactivada responde 404 `MENU_ITEM_NOT_FOUND`.
+Con `include_inactive=true` (Admin) incluye categorías y productos desactivados para poder reactivarlos.
+Crear un producto o cambiar una categoría emiten `menu.changed`.
+
 **Catálogo.** `POST/PATCH /menu/items` aceptan `preparation_steps: [{id?, name, area, expected_minutes, is_active}]`
 (1–12 tareas, áreas `KITCHEN|GRILL`, 0–600 min; el orden de la lista es el orden de visualización).
 `PATCH` con la lista reemplaza la receta conservando el `id` de las tareas editadas. Sin la lista, un
@@ -157,10 +168,22 @@ para clientes en caché.
 | Método | Ruta | Rol |
 |---|---|---|
 | GET | `/api/v1/reports/current-shift` | Admin |
-| GET | `/api/v1/reports/sales` | Admin (`?date_from&date_to`) |
+| GET | `/api/v1/reports/sales` | Admin (`?date_from&date_to&shift_id&waiter_id&scope`) |
 | GET | `/api/v1/reports/products` | Admin |
 | GET | `/api/v1/reports/preparation` | Admin |
 | GET | `/api/v1/reports/shifts/{shift_id}` | Admin |
+
+Selección de turnos (la misma para ventas, gastos, productos y preparación). Prioridad:
+
+1. `shift_id` → ese turno.
+2. `date_from` / `date_to` → turnos **abiertos** en ese rango de días locales (`BUSINESS_TIMEZONE`,
+   por defecto `America/Lima`); `date_to` incluye su día completo. Un turno abierto a las 23:30 pertenece
+   al día en que se abrió aunque termine después de medianoche.
+3. `scope=all` → historial completo. `scope=current` o sin parámetros → turno abierto; si no hay
+   ninguno, el último registrado (comportamiento anterior, se mantiene por compatibilidad).
+
+Los gastos se suman por turno seleccionado, **haya o no pedidos** en él; `waiter_id` filtra solo las ventas.
+`/shifts/history` usa los mismos límites de día local.
 
 ### Comprobantes y push (§33)
 
@@ -215,6 +238,7 @@ Canales (asignados por el servidor según el rol): `waiters`, `kitchen`, `grill`
 | `order.paid` | waiters, admin | `order_id`, `paid_amount` |
 | `purchase_list.changed` | kitchen, grill, admin | — |
 | `shift.opened` / `shift.closed` | admin | turno |
+| `expense.created` | admin | `expense_id`, `shift_id` |
 
 El cliente responde a los eventos invalidando las queries de React Query correspondientes,
 mostrando un toast y, para `order.ready` / `command.created` / `availability.changed`,

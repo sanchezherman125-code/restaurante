@@ -1,7 +1,9 @@
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { useQueue } from "../stores/queue";
 import { useSession } from "../stores/session";
+import { useUi } from "../stores/ui";
 import type { BoardTask, ItemGroup } from "../types/api";
 import { BoardPage } from "./BoardPage";
 
@@ -169,5 +171,34 @@ describe("tablero de preparación por tareas", () => {
     expect(totals).toHaveTextContent("1 pendiente");
     expect(totals).toHaveTextContent("1 preparando");
     expect(totals).toHaveTextContent("1 lista");
+  });
+
+  it("un pedido ya pagado se sigue preparando pero no ofrece cancelar el plato", () => {
+    setRole("KITCHEN");
+    mocks.groups = [{ ...group([task({ status: "PREPARING", item_status: "PREPARING" })]), order_general_status: "PAID" }];
+    render(<BoardPage />);
+    expect(screen.getByRole("button", { name: /Listo/ })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Cancelar plato" })).toBeNull();
+  });
+
+  it("una cancelación en cola no se anuncia como hecha y queda marcada como pendiente", async () => {
+    setRole("KITCHEN");
+    useQueue.setState({ operations: [] });
+    mocks.groups = [group([task({ status: "PENDING", item_status: "PENDING" })])];
+    mocks.sendOrQueue.mockReset().mockResolvedValue({ queued: true, operationId: "cancel-1" });
+    useUi.setState({ toasts: [] });
+    const user = userEvent.setup();
+    render(<BoardPage />);
+    await user.click(screen.getByRole("button", { name: "Cancelar plato" }));
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancelar plato" }));
+    expect(useUi.getState().toasts.map((toast) => toast.title)).not.toContain("Producto cancelado");
+
+    act(() => useQueue.setState({ operations: [{
+      client_operation_id: "cancel-1", owner_user_id: "u", operation_type: "CANCEL_ORDER_ITEM",
+      path: "/api/v1/orders/order-1/items/item-1/cancel", method: "POST", body: {}, parent_operation_id: null,
+      created_at: 1, attempt_count: 1, last_attempt_at: 1, status: "LOCAL_PENDING", last_error: null,
+    }] }));
+    expect(screen.getByTestId("cancel-queued")).toHaveTextContent("Cancelación pendiente de envío");
+    expect(screen.queryByRole("button", { name: "Cancelar plato" })).toBeNull();
   });
 });

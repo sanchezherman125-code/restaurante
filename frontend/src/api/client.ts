@@ -64,26 +64,31 @@ interface RequestOptions {
   responseType?: "blob";
 }
 
-let refreshPromise: Promise<boolean> | null = null;
+/** Resultado de renovar la sesión: solo "invalid" significa que las credenciales ya no sirven. */
+export type RefreshOutcome = "refreshed" | "invalid" | "unreachable";
 
-export async function tryRefresh(): Promise<boolean> {
+let refreshPromise: Promise<RefreshOutcome> | null = null;
+
+export async function refreshSession(): Promise<RefreshOutcome> {
   if (!refreshPromise) {
-    refreshPromise = (async () => {
+    refreshPromise = (async (): Promise<RefreshOutcome> => {
       const refresh = getRefreshToken();
       try {
-        if (!refresh) return false;
+        if (!refresh) return "invalid";
         const response = await fetch(`${API_BASE}/api/v1/auth/refresh`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           signal: AbortSignal.timeout(15000),
           body: JSON.stringify({ refresh_token: refresh }),
         });
-        if (!response.ok) return false;
+        // Un servidor caído o saturado no invalida la sesión: se reintenta al recuperar la conexión.
+        if (response.status >= 500 || response.status === 408 || response.status === 429) return "unreachable";
+        if (!response.ok) return "invalid";
         const data = await response.json();
         setTokens(data.access_token, data.refresh_token);
-        return true;
+        return "refreshed";
       } catch {
-        return false;
+        return "unreachable";
       } finally {
         setTimeout(() => {
           refreshPromise = null;
@@ -92,6 +97,43 @@ export async function tryRefresh(): Promise<boolean> {
     })();
   }
   return refreshPromise;
+}
+
+export async function tryRefresh(): Promise<boolean> {
+  return (await refreshSession()) === "refreshed";
+}
+
+type SessionExpiredListener = () => void;
+const sessionExpiredListeners = new Set<SessionExpiredListener>();
+
+/** Avisa cuando el servidor rechazó definitivamente las credenciales (no por falta de conexión). */
+export function onSessionExpired(listener: SessionExpiredListener): () => void {
+  sessionExpiredListeners.add(listener);
+  return () => sessionExpiredListeners.delete(listener);
+}
+
+function expireSession(): void {
+  clearTokens();
+  for (const listener of sessionExpiredListeners) listener();
+}
+
+/** Fallo transitorio (red, servidor caído): nunca justifica cerrar la sesión ni descartar operaciones. */
+export function isConnectivityError(error: unknown): boolean {
+  return error instanceof NetworkError || (error instanceof ApiError && error.status >= 500);
+}
+
+/** Usuario dueño del token guardado. Solo identifica la sesión local; el servidor sigue validando la firma. */
+export function storedTokenSubject(): string | null {
+  const token = getAccessToken() ?? getRefreshToken();
+  const payload = token?.split(".")[1];
+  if (!payload) return null;
+  try {
+    const json = atob(payload.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(payload.length / 4) * 4, "="));
+    const sub = (JSON.parse(json) as { sub?: unknown }).sub;
+    return typeof sub === "string" ? sub : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function apiRequest<T>(path: string, options: RequestOptions = {}, refreshedOnce = false): Promise<T> {
@@ -119,11 +161,13 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}, 
   }
 
   if (response.status === 401 && auth) {
-    const refreshed = !refreshedOnce && await tryRefresh();
-    if (refreshed) {
+    const outcome: RefreshOutcome = refreshedOnce ? "invalid" : await refreshSession();
+    if (outcome === "refreshed") {
       return apiRequest<T>(path, { ...options, auth: true }, true);
     }
-    clearTokens();
+    // Sin conexión para renovar: la sesión local se conserva y la operación queda pendiente.
+    if (outcome === "unreachable") throw new NetworkError();
+    expireSession();
     throw new ApiError(401, "SESSION_EXPIRED", "La sesión expiró. Inicie sesión nuevamente.");
   }
 

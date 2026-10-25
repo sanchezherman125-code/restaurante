@@ -8,6 +8,7 @@ import { formatElapsed, useElapsed, useNow } from "../hooks/useElapsed";
 import { AREA_NAME, TASK_STATUS } from "../lib/labels";
 import { errorMessage, sendOrQueue } from "../lib/send";
 import type { BoardTask, ItemGroup, MenuItem } from "../types/api";
+import { useQueue } from "../stores/queue";
 import { useSession } from "../stores/session";
 import { useUi } from "../stores/ui";
 
@@ -21,8 +22,9 @@ function heat(elapsed: number, expectedMinutes: number | null, open: boolean): {
   return { ratio: Math.min(1, ratio), level: ratio > 1 ? "late" : ratio > 0.8 ? "warn" : "ok" };
 }
 
-function TaskLine({ task, updating, onStatus, onCancel }: {
-  task: BoardTask; updating: boolean; onStatus: (task: BoardTask, status: string) => void; onCancel: (task: BoardTask) => void;
+function TaskLine({ task, updating, cancellable, cancelQueued, onStatus, onCancel }: {
+  task: BoardTask; updating: boolean; cancellable: boolean; cancelQueued: boolean;
+  onStatus: (task: BoardTask, status: string) => void; onCancel: (task: BoardTask) => void;
 }) {
   const elapsed = useElapsed(task.started_at ?? task.created_at);
   const open = task.status === "PENDING" || task.status === "PREPARING";
@@ -77,7 +79,9 @@ function TaskLine({ task, updating, onStatus, onCancel }: {
         {task.status === "PREPARING" ? (
           <button className="btn success large grow" disabled={updating} onClick={() => onStatus(task, "READY")}><Icon name="check" />Listo</button>
         ) : null}
-        {task.item_status === "PENDING" || task.item_status === "PREPARING" ? (
+        {cancelQueued && (task.item_status === "PENDING" || task.item_status === "PREPARING") ? (
+          <span className="chip warning" data-testid="cancel-queued"><Icon name="cloud" />Cancelación pendiente de envío</span>
+        ) : cancellable && (task.item_status === "PENDING" || task.item_status === "PREPARING") ? (
           <button className="btn ghost small" disabled={updating} onClick={() => onCancel(task)}>Cancelar plato</button>
         ) : null}
       </div>
@@ -98,9 +102,10 @@ function groupTone(group: ItemGroup, now: number): "late" | "running" | "ready" 
   return "waiting";
 }
 
-function GroupCard({ group, tone, onStatus, onCancel, updatingTasks }: {
+function GroupCard({ group, tone, onStatus, onCancel, updatingTasks, queuedCancels }: {
   group: ItemGroup; tone: "late" | "running" | "ready" | "waiting";
   onStatus: (task: BoardTask, status: string) => void; onCancel: (task: BoardTask) => void; updatingTasks: Record<string, string>;
+  queuedCancels: Set<string>;
 }) {
   const elapsed = useElapsed(group.created_at);
   return (
@@ -120,6 +125,9 @@ function GroupCard({ group, tone, onStatus, onCancel, updatingTasks }: {
             key={task.id}
             task={task}
             updating={Boolean(updatingTasks[task.id] && updatingTasks[task.id] !== task.status)}
+            // Un pedido pagado se sigue preparando, pero el servidor ya no admite cancelar sus platos.
+            cancellable={group.order_general_status !== "PAID"}
+            cancelQueued={queuedCancels.has(task.order_item_id)}
             onStatus={onStatus}
             onCancel={onCancel}
           />
@@ -188,14 +196,22 @@ function Board({ area }: { area: string }) {
         (operationId) =>
           ordersApi.cancelItem(task.order_id, task.order_item_id, `Cancelado en ${AREA_LABEL[area]}`, operationId),
       );
-      if (!outcome.queued) void queryClient.invalidateQueries({ queryKey: ["preparation"] });
-      toast("info", "Producto cancelado");
+      if (!outcome.queued) {
+        void queryClient.invalidateQueries({ queryKey: ["preparation"] });
+        toast("info", "Producto cancelado");
+      }
     } catch (error) {
       toast("error", "No se pudo cancelar", errorMessage(error));
     } finally {
       setCancelTarget(null);
     }
   }
+
+  const operations = useQueue((state) => state.operations);
+  const queuedCancels = useMemo(() => new Set(operations
+    .filter((op) => op.operation_type === "CANCEL_ORDER_ITEM" && (op.status === "LOCAL_PENDING" || op.status === "SENDING"))
+    .map((op) => /\/items\/([^/]+)\/cancel$/.exec(op.path)?.[1])
+    .filter((id): id is string => Boolean(id))), [operations]);
 
   const now = useNow(5000);
   const data = useMemo(() => {
@@ -249,6 +265,7 @@ function Board({ area }: { area: string }) {
               onStatus={(task, status) => void changeStatus(task, status)}
               onCancel={(task) => setCancelTarget(task)}
               updatingTasks={updatingTasks}
+              queuedCancels={queuedCancels}
             />
           ))}
         </div>

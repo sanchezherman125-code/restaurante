@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { reportsApi } from "../../api/endpoints";
+import { reportsApi, shiftsApi } from "../../api/endpoints";
 import { Icon } from "../../components/Icon";
 import { Kpi, PageHeader, SkeletonList } from "../../components/Layout";
 import { money } from "../../hooks/useElapsed";
@@ -13,28 +13,59 @@ function formatSeconds(seconds: number | null): string {
   return `${min}m ${sec}s`;
 }
 
-const iso = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+type Period = "shift" | "today" | "7d" | "month" | "all" | "custom";
+
+const PERIOD_LABEL: Record<Exclude<Period, "custom">, string> = {
+  shift: "Turno actual", today: "Hoy", "7d": "7 días", month: "Este mes", all: "Todo",
+};
+
+/** Fecha calendario (AAAA-MM-DD) en Perú, sin depender de la zona horaria del dispositivo. */
+export function peruDate(at: Date = new Date()): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Lima", year: "numeric", month: "2-digit", day: "2-digit" }).format(at);
+}
+
+function shiftDays(isoDate: string, days: number): string {
+  const [year, month, day] = isoDate.split("-").map(Number);
+  return new Date(Date.UTC(year, month - 1, day + days)).toISOString().slice(0, 10);
+}
+
+/** Parámetros del reporte para cada período. Sin parámetros el servidor responde el turno actual. */
+export function periodParams(period: Period, dateFrom: string, dateTo: string, now: Date = new Date()): Record<string, string> {
+  const today = peruDate(now);
+  switch (period) {
+    case "shift": return {};
+    case "today": return { date_from: today, date_to: today };
+    case "7d": return { date_from: shiftDays(today, -6), date_to: today };
+    case "month": return { date_from: `${today.slice(0, 8)}01`, date_to: today };
+    case "all": return { scope: "all" };
+    case "custom": return { ...(dateFrom ? { date_from: dateFrom } : {}), ...(dateTo ? { date_to: dateTo } : {}) };
+  }
+}
 
 export function ReportsPage() {
+  const [period, setPeriod] = useState<Period>("shift");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
 
-  const params = {
-    ...(dateFrom ? { date_from: dateFrom } : {}),
-    ...(dateTo ? { date_to: dateTo } : {}),
-  };
+  const params = periodParams(period, dateFrom, dateTo);
+  const shownFrom = params.date_from ?? "";
+  const shownTo = params.date_to ?? "";
 
   const sales = useQuery({ queryKey: ["reports", "sales", params], queryFn: () => reportsApi.sales(params), retry: false });
   const products = useQuery({ queryKey: ["reports", "products", params], queryFn: () => reportsApi.products(params), retry: false });
   const prep = useQuery({ queryKey: ["reports", "preparation", params], queryFn: () => reportsApi.preparation(params), retry: false });
+  const shift = useQuery({ queryKey: ["shifts", "current"], queryFn: shiftsApi.current, retry: false });
 
-  function preset(days: number | "month" | "all") {
-    const today = new Date();
-    if (days === "all") { setDateFrom(""); setDateTo(""); return; }
-    const from = days === "month" ? new Date(today.getFullYear(), today.getMonth(), 1) : new Date(today.getTime() - (days - 1) * 86_400_000);
-    setDateFrom(iso(from));
-    setDateTo(iso(today));
+  function customRange(from: string, to: string) {
+    setPeriod(from || to ? "custom" : "shift");
+    setDateFrom(from);
+    setDateTo(to);
   }
+
+  const subtitle = period === "all" ? "Historial completo"
+    : period === "custom" ? "Rango personalizado (fecha de apertura del turno, hora de Perú)"
+    : period === "shift" ? (shift.data?.status === "OPEN" ? "Turno abierto" : "Sin turno abierto: se muestra el último turno")
+    : `${PERIOD_LABEL[period]} · turnos abiertos en el período (hora de Perú)`;
 
   if (sales.isLoading) return <div className="page"><PageHeader title="Reportes" /><SkeletonList rows={3} height={90} label="Generando reportes" /></div>;
 
@@ -44,22 +75,23 @@ export function ReportsPage() {
 
   return (
     <div className="page">
-      <PageHeader title="Reportes" subtitle={dateFrom || dateTo ? "Rango personalizado" : "Turno actual y datos disponibles"} />
+      <PageHeader title="Reportes" subtitle={subtitle} />
 
       <section className="card filters" aria-label="Rango de fechas">
         <div className="field">
           <label className="label" htmlFor="rep-from">Desde</label>
-          <input id="rep-from" className="input" type="date" value={dateFrom} max={dateTo || undefined} onChange={(event) => setDateFrom(event.target.value)} />
+          <input id="rep-from" className="input" type="date" value={shownFrom} max={shownTo || undefined} onChange={(event) => customRange(event.target.value, shownTo)} />
         </div>
         <div className="field">
           <label className="label" htmlFor="rep-to">Hasta</label>
-          <input id="rep-to" className="input" type="date" value={dateTo} min={dateFrom || undefined} onChange={(event) => setDateTo(event.target.value)} />
+          <input id="rep-to" className="input" type="date" value={shownTo} min={shownFrom || undefined} onChange={(event) => customRange(shownFrom, event.target.value)} />
         </div>
         <div className="segmented" role="group" aria-label="Rangos rápidos">
-          <button onClick={() => preset(1)}>Hoy</button>
-          <button onClick={() => preset(7)}>7 días</button>
-          <button onClick={() => preset("month")}>Este mes</button>
-          <button onClick={() => preset("all")}>Todo</button>
+          {(Object.keys(PERIOD_LABEL) as (keyof typeof PERIOD_LABEL)[]).map((key) => (
+            <button key={key} className={period === key ? "active" : ""} aria-pressed={period === key} onClick={() => setPeriod(key)}>
+              {PERIOD_LABEL[key]}
+            </button>
+          ))}
         </div>
       </section>
 

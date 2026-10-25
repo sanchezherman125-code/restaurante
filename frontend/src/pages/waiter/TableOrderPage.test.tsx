@@ -57,6 +57,7 @@ vi.mock("@tanstack/react-query", () => ({
 vi.mock("../../api/endpoints", () => ({
   menuApi: { get: vi.fn() },
   ordersApi: { active: vi.fn(), createCommand: vi.fn(), setItemStatus: vi.fn(), cancelItem: vi.fn() },
+  tablesApi: { list: vi.fn() },
 }));
 
 vi.mock("../../lib/send", () => ({

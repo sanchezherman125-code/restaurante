@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { menuApi, ordersApi } from "../../api/endpoints";
+import { menuApi, ordersApi, tablesApi } from "../../api/endpoints";
 import { Icon } from "../../components/Icon";
 import { ConfirmDialog, Modal } from "../../components/Modal";
 import { EmptyState, SearchField, SkeletonList, StatusBadge } from "../../components/Layout";
@@ -10,8 +10,9 @@ import { AREA_NAME, ITEM_STATUS, ORDER_STATUS, TASK_STATUS } from "../../lib/lab
 import { ApiError } from "../../api/client";
 import { errorMessage, sendOrQueue } from "../../lib/send";
 import { enqueue } from "../../offline/queue";
-import type { MenuItem, Order, OrderItem } from "../../types/api";
+import type { MenuItem, Order, OrderItem, QueuedOperation } from "../../types/api";
 import { usePendingOrders } from "../../stores/pendingOrders";
+import { useQueue } from "../../stores/queue";
 import { useTableDrafts } from "../../stores/tableDrafts";
 import { useUi } from "../../stores/ui";
 
@@ -27,10 +28,23 @@ function resolveMenuImageUrl(imageUrl: string): string {
 
 const URGENCY: Record<string, number> = { READY: 0, PREPARING: 1, PENDING: 2, DELIVERED: 3, CANCELLED: 4 };
 
+/** Operación local (cola) que afecta a un plato: se muestra como pendiente, nunca como confirmada. */
+function localItemNote(op: QueuedOperation | undefined, item: OrderItem): { label: string; tone: string; blocking: boolean } | null {
+  // El estado del servidor manda: si el plato ya terminó, un aviso local atrasado no lo contradice.
+  if (!op || item.status === "CANCELLED" || item.status === "DELIVERED") return null;
+  const action = op.operation_type === "CANCEL_ORDER_ITEM" ? "Cancelación" : "Entrega";
+  if (op.status === "SYNC_ERROR") return { label: `${action} no aplicada`, tone: "danger", blocking: false };
+  if (op.status === "SENDING") return { label: `${action}: enviando…`, tone: "info", blocking: true };
+  return { label: `${action} pendiente de envío`, tone: "warning", blocking: true };
+}
+
 /** Un plato del pedido con su avance real (por área cuando se prepara en más de una). */
-function OrderLine({ item, commandNumber, onStatus, onCancel }: {
-  item: OrderItem; commandNumber: number; onStatus: (item: OrderItem, status: string) => void; onCancel: (item: OrderItem) => void;
+function OrderLine({ item, commandNumber, localOp, canCancel, onStatus, onCancel }: {
+  item: OrderItem; commandNumber: number; localOp?: QueuedOperation; canCancel: boolean;
+  onStatus: (item: OrderItem, status: string) => void; onCancel: (item: OrderItem) => void;
 }) {
+  const local = localItemNote(localOp, item);
+  const actionable = !local?.blocking;
   const elapsed = useElapsed(item.preparation_started_at ?? item.created_at);
   const expectedSeconds = (item.expected_prep_minutes_snapshot ?? 0) * 60;
   const open = item.status === "PENDING" || item.status === "PREPARING";
@@ -48,6 +62,7 @@ function OrderLine({ item, commandNumber, onStatus, onCancel }: {
         <div className="row wrap" style={{ gap: "var(--s2)", marginTop: 6 }}>
           <StatusBadge label={status.label} tone={status.tone} icon={status.icon} />
           {open && item.requires_preparation ? <span className={`timer ${late ? "late" : ""}`} title="Tiempo de preparación">{formatElapsed(elapsed)}</span> : null}
+          {local ? <span className={`chip ${local.tone}`} data-testid="local-item-state"><Icon name="cloud" />{local.label}</span> : null}
           {live.length > 1 && item.status !== "DELIVERED"
             ? live.map((task) => (
                 <span key={task.id} className={`chip ${task.status === "READY" ? "success" : task.status === "PREPARING" ? "info" : ""}`}>
@@ -57,13 +72,13 @@ function OrderLine({ item, commandNumber, onStatus, onCancel }: {
             : null}
         </div>
         <div className="row wrap" style={{ marginTop: 8 }}>
-          {item.status === "READY" && item.requires_preparation ? (
+          {actionable && item.status === "READY" && item.requires_preparation ? (
             <button className="btn success small" onClick={() => onStatus(item, "DELIVERED")}><Icon name="check" />Entregado</button>
           ) : null}
-          {item.status === "PENDING" && !item.requires_preparation ? (
+          {actionable && item.status === "PENDING" && !item.requires_preparation ? (
             <button className="btn success small" onClick={() => onStatus(item, "DELIVERED")}><Icon name="check" />Entregado</button>
           ) : null}
-          {item.status === "PENDING" ? (
+          {actionable && canCancel && item.status === "PENDING" ? (
             <button className="btn ghost small" onClick={() => onCancel(item)}>Cancelar</button>
           ) : null}
           <span className="hint" style={{ marginLeft: "auto" }}>Comanda #{commandNumber}</span>
@@ -80,12 +95,16 @@ export function TableOrderPage() {
   const queryClient = useQueryClient();
   const toast = useUi((state) => state.toast);
   const pendingRecord = usePendingOrders((state) => state.records.find((r) => r.table_id === tableId && !r.server_order_id && !r.error));
+  const failedRecord = usePendingOrders((state) => state.records.find((r) => r.table_id === tableId && !r.server_order_id && r.error));
+  const syncedRecord = usePendingOrders((state) => state.records.find((r) => r.table_id === tableId && r.server_order_id));
+  const operations = useQueue((state) => state.operations);
   const addPending = usePendingOrders((state) => state.add);
   const draft = useTableDrafts((state) => state.drafts[tableId]);
   const discardDraft = useTableDrafts((state) => state.discard);
 
   const menu = useQuery({ queryKey: ["menu"], queryFn: menuApi.get });
   const orders = useQuery({ queryKey: ["orders", "active"], queryFn: () => ordersApi.active(), refetchInterval: 15000, retry: false });
+  const tables = useQuery({ queryKey: ["tables"], queryFn: tablesApi.list });
 
   const [categoryId, setCategoryId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -96,24 +115,49 @@ export function TableOrderPage() {
   const [confirmSend, setConfirmSend] = useState(false);
   const [confirmCancel, setConfirmCancel] = useState<OrderItem | null>(null);
   const [chosenView, setChosenView] = useState<"menu" | "order" | null>(null);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const removePending = usePendingOrders((state) => state.remove);
 
   const order = useMemo(() => orders.data?.find((o) => o.table_id === tableId), [orders.data, tableId]);
+  // Un pedido pagado sigue visible para entregar lo pendiente, pero el servidor ya no admite comandas ni cancelaciones.
+  const acceptsCommands = !order || order.status !== "PAID";
+  const localRecord = pendingRecord ?? failedRecord;
+  const localCommands = useMemo(() => operations.filter((op) => op.status !== "SYNCED" && (
+    (localRecord && (op.client_operation_id === localRecord.operation_id || op.parent_operation_id === localRecord.operation_id))
+    || (order && op.operation_type === "CREATE_COMMAND" && op.path === `/api/v1/orders/${order.id}/commands`)
+  )), [localRecord, operations, order]);
+  const itemOperations = useMemo(() => {
+    const byItem = new Map<string, QueuedOperation>();
+    if (!order) return byItem;
+    const pattern = new RegExp(`^/api/v1/orders/${order.id}/items/([^/]+)/(cancel|status)$`);
+    for (const op of operations) {
+      const match = op.status !== "SYNCED" ? pattern.exec(op.path) : null;
+      if (match) byItem.set(match[1], op);
+    }
+    return byItem;
+  }, [operations, order]);
+  const menuById = useMemo(() => new Map((menu.data?.items ?? []).map((item) => [item.id, item])), [menu.data]);
   const activeCategory = categoryId ?? menu.data?.categories[0]?.id ?? null;
   const visibleItems = (menu.data?.items ?? []).filter((item) => {
     const matchesCategory = search.trim() ? true : item.category_id === activeCategory;
     const matchesSearch = !search.trim() || `${item.name} ${item.description ?? ""}`.toLocaleLowerCase("es-PE").includes(search.trim().toLocaleLowerCase("es-PE"));
     return item.is_active && matchesCategory && matchesSearch;
   });
-  const table = pendingRecord?.table_name ?? order?.table_name ?? draft?.table_name ?? "Mesa";
+  const table = localRecord?.table_name ?? order?.table_name ?? draft?.table_name ?? "Mesa";
   // Si la mesa ya tiene pedido (enviado desde aquí o por otro mesero), el borrador local deja de tener sentido.
   useEffect(() => {
-    if (draft && (order || pendingRecord)) discardDraft(draft.table_id);
-  }, [draft, order, pendingRecord, discardDraft]);
+    if (draft && (order || localRecord)) discardDraft(draft.table_id);
+  }, [draft, order, localRecord, discardDraft]);
   const [releasing, setReleasing] = useState(false);
   const [confirmRelease, setConfirmRelease] = useState(false);
   const cartUnits = cart.reduce((sum, line) => sum + line.quantity, 0);
   const cartSubtotal = cart.reduce((sum, line) => sum + Number(line.item.price) * line.quantity, 0);
   const cartUnitLabel = `${cartUnits} ${cartUnits === 1 ? "unidad" : "unidades"}`;
+  // La disponibilidad puede cambiar mientras se arma la comanda: se marca antes de enviarla.
+  const unavailableIds = new Set(menu.data ? cart.filter((line) => {
+    const current = menuById.get(line.item.id);
+    return !current || current.availability_status === "SOLD_OUT";
+  }).map((line) => line.item.id) : []);
 
   function addToCart(item: MenuItem) {
     setCart((lines) => {
@@ -218,6 +262,23 @@ export function TableOrderPage() {
     }
   }
 
+  async function retryLocalOrder() {
+    if (!failedRecord) return;
+    const chain = operations.filter((op) => op.client_operation_id === failedRecord.operation_id || op.parent_operation_id === failedRecord.operation_id);
+    for (const op of chain) {
+      if (op.status === "SYNC_ERROR") await useQueue.getState().retry(op.client_operation_id);
+    }
+  }
+
+  async function discardLocalOrder() {
+    if (!failedRecord) return;
+    const chain = operations.filter((op) => op.client_operation_id === failedRecord.operation_id || op.parent_operation_id === failedRecord.operation_id);
+    for (const op of chain) await useQueue.getState().discard(op.client_operation_id);
+    removePending(failedRecord.operation_id);
+    setConfirmDiscard(false);
+    toast("info", `${table}: comanda local descartada`);
+  }
+
   async function changeItemStatus(item: OrderItem, status: string) {
     if (!order) return;
     try {
@@ -252,8 +313,8 @@ export function TableOrderPage() {
       );
       if (!outcome.queued) {
         void queryClient.invalidateQueries({ queryKey: ["orders"] });
+        toast("info", "Producto cancelado");
       }
-      toast("info", "Producto cancelado");
     } catch (error) {
       toast("error", "No se pudo cancelar", errorMessage(error));
     } finally {
@@ -279,7 +340,23 @@ export function TableOrderPage() {
     }
   }
 
-  if (!order && !pendingRecord && !draft) {
+  const syncedOp = syncedRecord ? operations.find((op) => op.client_operation_id === syncedRecord.operation_id) : undefined;
+  // Recién sincronizado: hasta releer los pedidos no se afirma que la mesa está libre.
+  if (!order && !localRecord && !draft && syncedRecord && orders.dataUpdatedAt < (syncedOp?.last_attempt_at ?? 0)) {
+    return <div className="page"><SkeletonList rows={3} height={72} label="Confirmando el pedido con el servidor" /></div>;
+  }
+
+  const servedByOther = !order && !localRecord && !draft && Boolean(tables.data?.find((entry) => entry.id === tableId)?.order_id);
+  if (servedByOther) {
+    return (
+      <div className="page narrow">
+        <EmptyState icon="user" title="Otro mesero atiende esta mesa" hint="Solo quien abrió el pedido (o un administrador) puede modificarlo."
+          action={<button className="btn secondary" onClick={() => navigate("/mesas")}><Icon name="arrowLeft" />Volver al salón</button>} />
+      </div>
+    );
+  }
+
+  if (!order && !localRecord && !draft) {
     return (
       <div className="page narrow">
         <EmptyState icon="chair" title="Esta mesa no tiene pedido abierto" hint="Vuelva al salón para abrir la mesa."
@@ -299,7 +376,7 @@ export function TableOrderPage() {
   const activeCategoryName = menu.data?.categories.find((category) => category.id === activeCategory)?.name ?? "Productos";
   // Por defecto se muestra el pedido cuando hay algo que entregar ahora (listo, o bebida directa pendiente).
   const actionable = orderLines.some((item) => item.status === "READY" || (item.status === "PENDING" && !item.requires_preparation));
-  const view = chosenView ?? (actionable ? "order" : "menu");
+  const view = chosenView ?? (actionable || !acceptsCommands || failedRecord ? "order" : "menu");
   const quantityOf = (id: string) => cart.find((line) => line.item.id === id)?.quantity ?? 0;
 
   return (
@@ -311,13 +388,15 @@ export function TableOrderPage() {
           <div className="hint">
             {pendingRecord
               ? "Pedido guardado en este dispositivo: aún no llegó al servidor"
+              : failedRecord
+                ? "El pedido no llegó al servidor: revise el error"
               : !order && draft
                 ? `${draft.persons_count} personas · el pedido se crea al enviar la primera comanda`
                 : `${order?.persons_count ?? 0} personas`}
             {orderStatus ? <> · <StatusBadge label={orderStatus.label} tone={orderStatus.tone} icon={orderStatus.icon} /></> : null}
           </div>
         </div>
-        {!order && !pendingRecord && draft ? (
+        {!order && !localRecord && draft ? (
           <button className="btn ghost" onClick={() => { discardDraft(draft.table_id); navigate("/mesas"); }}>
             <Icon name="x" />Cerrar mesa
           </button>
@@ -325,8 +404,25 @@ export function TableOrderPage() {
         {orderIsEmpty ? (
           <button className="btn ghost" onClick={() => setConfirmRelease(true)} disabled={releasing}><Icon name="x" />Liberar mesa</button>
         ) : null}
-        {order && !orderIsEmpty ? <button className="btn" onClick={() => navigate(`/cobro/${order.id}`)}><Icon name="money" />Cobrar</button> : null}
+        {order && !orderIsEmpty ? <button className="btn" onClick={() => navigate(`/cobro/${order.id}`)}><Icon name="money" />{order.status === "PAID" ? "Ver pago" : "Cobrar"}</button> : null}
       </div>
+
+      {failedRecord ? (
+        <div className="card local-sync-error" role="alert" data-testid="local-order-error">
+          <strong>La primera comanda no se pudo registrar en el servidor</strong>
+          <p className="hint">{failedRecord.error}</p>
+          <div className="row">
+            <button className="btn secondary" onClick={() => void retryLocalOrder()}><Icon name="refresh" />Reintentar</button>
+            <button className="btn danger" onClick={() => setConfirmDiscard(true)}>Descartar</button>
+          </div>
+        </div>
+      ) : null}
+
+      {!acceptsCommands ? (
+        <div className="ready-banner" role="status" data-testid="paid-order-notice"><Icon name="money" />
+          Pedido pagado: ya no admite comandas nuevas. Entregue lo pendiente.
+        </div>
+      ) : null}
 
       {readyCount > 0 ? (
         <div className="ready-banner" role="status"><Icon name="check" />
@@ -360,7 +456,10 @@ export function TableOrderPage() {
             <h3>{search.trim() ? "Resultados" : activeCategoryName}</h3>
             <span className="hint">{visibleItems.length} {visibleItems.length === 1 ? "producto" : "productos"}</span>
           </div>
-          {menu.isLoading ? <SkeletonList rows={5} height={76} label="Cargando carta" /> : (
+          {!acceptsCommands || failedRecord ? (
+            <EmptyState icon="ban" title={failedRecord ? "Resuelva primero el envío pendiente" : "El pedido ya está pagado"}
+              hint={failedRecord ? "Reintente o descarte la comanda que no llegó al servidor." : "Para pedir más, abra un pedido nuevo cuando se libere la mesa."} />
+          ) : menu.isLoading ? <SkeletonList rows={5} height={76} label="Cargando carta" /> : (
             <div className="menu-product-list">
               {visibleItems.map((item) => {
                 const soldOut = item.availability_status === "SOLD_OUT";
@@ -414,7 +513,10 @@ export function TableOrderPage() {
                   {cart.map((line) => (
                     <article className="cart-line" key={line.item.id}>
                       <div className="cart-line-heading">
-                        <div className="grow"><strong>{line.item.name}</strong><span className="num">{money(Number(line.item.price) * line.quantity)}</span></div>
+                        <div className="grow">
+                          <strong>{line.item.name}</strong><span className="num">{money(Number(line.item.price) * line.quantity)}</span>
+                          {unavailableIds.has(line.item.id) ? <span className="chip danger"><Icon name="ban" />Ya no disponible</span> : null}
+                        </div>
                         <div className="qty-stepper compact">
                           <button aria-label={`Restar ${line.item.name} (comanda)`} onClick={() => setQuantity(line.item.id, line.quantity - 1)}>−</button>
                           <span className="value">{line.quantity}</span>
@@ -436,7 +538,8 @@ export function TableOrderPage() {
                   <textarea id="order-notes" className="textarea" style={{ minHeight: "4rem" }} placeholder="Indicaciones generales (opcional)" value={orderNotes} onChange={(event) => setOrderNotes(event.target.value)} />
                 </div>
                 <div className="cart-subtotal"><span>Subtotal</span><strong className="num">{money(cartSubtotal)}</strong></div>
-                <button data-testid="send-command" className="btn block large" onClick={() => setConfirmSend(true)} disabled={sending || cart.length === 0}>
+                {unavailableIds.size > 0 ? <p className="hint">Quite los productos agotados o retirados de la carta para enviar la comanda.</p> : null}
+                <button data-testid="send-command" className="btn block large" onClick={() => setConfirmSend(true)} disabled={sending || cart.length === 0 || unavailableIds.size > 0 || !acceptsCommands || Boolean(failedRecord)}>
                   <Icon name="send" />Enviar comanda
                 </button>
               </>
@@ -448,13 +551,34 @@ export function TableOrderPage() {
               <h2 id="order-title">Pedido</h2>
               {order ? <strong className="num">{money(order.total)}</strong> : null}
             </div>
+            {localCommands.length > 0 ? (
+              <ul className="order-lines local-commands" aria-label="Comandas guardadas en este dispositivo">
+                {localCommands.map((op) => {
+                  const body = op.body as { items?: { menu_item_id: string; quantity?: number; notes?: string | null }[] };
+                  const failed = op.status === "SYNC_ERROR";
+                  return (body.items ?? []).map((line, index) => (
+                    <li key={`${op.client_operation_id}-${index}`} className="order-line status-pending" data-testid="local-command-line">
+                      <span className="qty">×{line.quantity ?? 1}</span>
+                      <div className="name">
+                        <div className="line-title">{menuById.get(line.menu_item_id)?.name ?? "Producto"}</div>
+                        {line.notes ? <div className="hint">“{line.notes}”</div> : null}
+                        <span className={`chip ${failed ? "danger" : "warning"}`}>
+                          <Icon name={failed ? "alert" : "cloud"} />{failed ? "No enviada al servidor" : "Pendiente de sincronización"}
+                        </span>
+                      </div>
+                    </li>
+                  ));
+                })}
+              </ul>
+            ) : null}
             {!order || order.items.length === 0 ? (
-              <EmptyState icon="receipt" title="Aún no hay productos" hint="Agregue productos desde la carta y envíe la comanda." />
+              localCommands.length > 0 ? null : <EmptyState icon="receipt" title="Aún no hay productos" hint="Agregue productos desde la carta y envíe la comanda." />
             ) : (
               <>
                 <ul className="order-lines">
                   {orderLines.map((item) => (
                     <OrderLine key={item.id} item={item} commandNumber={commandOf.get(item.id) ?? 1}
+                      localOp={itemOperations.get(item.id)} canCancel={acceptsCommands}
                       onStatus={(i, s) => void changeItemStatus(i, s)} onCancel={(i) => setConfirmCancel(i)} />
                   ))}
                 </ul>
@@ -469,7 +593,17 @@ export function TableOrderPage() {
         </aside>
       </div>
 
-      {cart.length > 0 && !cartOpen ? (
+      {confirmDiscard && failedRecord ? (
+        <ConfirmDialog
+          title="Descartar comanda no enviada"
+          message="La comanda guardada en este dispositivo dejará de enviarse. El servidor no la registró: la mesa queda libre."
+          confirmLabel="Descartar" danger
+          onConfirm={() => void discardLocalOrder()}
+          onCancel={() => setConfirmDiscard(false)}
+        />
+      ) : null}
+
+      {cart.length > 0 && !cartOpen && acceptsCommands ? (
         <button className="cart-quick-access" onClick={() => setCartOpen(true)}>
           <span><Icon name="orders" />Ver comanda · {cartUnitLabel}</span>
           <strong className="num">{money(cartSubtotal)}</strong>
@@ -514,7 +648,7 @@ export function TableOrderPage() {
                 <li key={line.item.id}><span><strong>{line.quantity}×</strong> {line.item.name}{line.notes.trim() ? <em> — {line.notes.trim()}</em> : null}</span><span className="num">{money(Number(line.item.price) * line.quantity)}</span></li>
               ))}
             </ul>
-            <div className="row"><span className="grow">{table} · {order?.persons_count ?? pendingRecord?.persons_count ?? draft?.persons_count ?? 0} personas</span><strong className="num">{money(cartSubtotal)}</strong></div>
+            <div className="row"><span className="grow">{table} · {order?.persons_count ?? localRecord?.persons_count ?? draft?.persons_count ?? 0} personas</span><strong className="num">{money(cartSubtotal)}</strong></div>
             <p className="hint">Se enviará a las áreas de preparación correspondientes.</p>
           </div>
         </Modal>

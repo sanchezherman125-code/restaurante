@@ -77,6 +77,7 @@ function invalidateFor(event: string, client: QueryClient): void {
     case "order.paid":
       void client.invalidateQueries({ queryKey: ["orders"] });
       void client.invalidateQueries({ queryKey: ["tables"] });
+      if (event === "order.paid") void client.invalidateQueries({ queryKey: ["reports"] });
       break;
     case "command.created":
     case "preparation_task.updated":
@@ -94,6 +95,11 @@ function invalidateFor(event: string, client: QueryClient): void {
     case "menu.changed":
     case "availability.changed":
       void client.invalidateQueries({ queryKey: ["menu"] });
+      break;
+    case "expense.created":
+      // Gasto confirmado (de cualquier usuario): el panel recalcula gastos y resultado neto.
+      void client.invalidateQueries({ queryKey: ["reports"] });
+      void client.invalidateQueries({ queryKey: ["expenses"] });
       break;
     case "purchase_list.changed":
       void client.invalidateQueries({ queryKey: ["purchase"] });

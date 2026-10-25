@@ -6,6 +6,8 @@ describe("money", () => {
     expect(money("12.5")).toBe("S/ 12.50");
     expect(money(0)).toBe("S/ 0.00");
     expect(money(null)).toBe("S/ 0.00");
+    expect(money("-80.00")).toBe("-S/ 80.00");
+    expect(money(-0.001)).toBe("S/ 0.00");
   });
 
   it("maneja valores no numéricos", () => {

@@ -45,7 +45,7 @@ function Distribution({ title, rows, empty }: { title: string; rows: [string, nu
 export function DashboardPage() {
   const navigate = useNavigate();
   const shift = useQuery({ queryKey: ["shifts", "current"], queryFn: shiftsApi.current, retry: false });
-  const sales = useQuery({ queryKey: ["reports", "current-shift"], queryFn: reportsApi.currentShift, retry: false });
+  const sales = useQuery({ queryKey: ["reports", "current-shift"], queryFn: reportsApi.currentShift, retry: false, refetchInterval: 15000 });
   const orders = useQuery({ queryKey: ["orders", "active"], queryFn: () => ordersApi.active(), retry: false, refetchInterval: 15000 });
   const tables = useQuery({ queryKey: ["tables"], queryFn: tablesApi.list, retry: false });
   const kitchen = useQuery({ queryKey: ["preparation", "kitchen"], queryFn: preparationApi.kitchen, retry: false, refetchInterval: 15000 });

@@ -89,7 +89,7 @@ export function MenuAdminPage() {
   const [categoryFilter, setCategoryFilter] = useState<string>("ALL");
   const [availability, setAvailability] = useState<"ALL" | "AVAILABLE" | "SOLD_OUT">("ALL");
 
-  const menu = useQuery({ queryKey: ["menu"], queryFn: menuApi.get, retry: false });
+  const menu = useQuery({ queryKey: ["menu", "admin"], queryFn: menuApi.getAll, retry: false });
 
   async function saveItem() {
     if (!itemForm) return;

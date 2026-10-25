@@ -3,9 +3,10 @@ from uuid import UUID
 from fastapi import APIRouter
 
 from app.core.deps import AdminUser, DbSession, StaffUser
-from app.core.errors import ConflictError, NotFoundError
+from app.core.errors import ConflictError
 from app.models import Order, RestaurantTable
 from app.schemas.menu import TableCreate, TableOut, TableUpdate
+from app.services import orders as order_service
 from app.ws.hub import hub
 
 router = APIRouter(prefix="/tables", tags=["tables"])
@@ -48,10 +49,17 @@ def create_table(payload: TableCreate, db: DbSession, _: AdminUser) -> TableOut:
 
 @router.patch("/{table_id}", response_model=TableOut)
 def update_table(table_id: UUID, payload: TableUpdate, db: DbSession, _: AdminUser) -> TableOut:
-    table = db.get(RestaurantTable, table_id)
-    if table is None:
-        raise NotFoundError("TABLE_NOT_FOUND", "Mesa no encontrada.")
+    # El bloqueo coincide con el de la apertura de pedidos: nunca se desactiva una mesa a mitad de una apertura.
+    table = order_service.lock_table(db, table_id)
     data = payload.model_dump(exclude_unset=True)
+    if data.get("is_active") is False and table.is_active:
+        order_id = order_service.occupying_order_id(db, table.id)
+        if order_id is not None:
+            raise ConflictError(
+                "TABLE_OCCUPIED",
+                f"{table.name} tiene un pedido activo. Termine de atenderlo antes de desactivarla.",
+                {"order_id": str(order_id)},
+            )
     if "number" in data:
         conflict = (
             db.query(RestaurantTable)

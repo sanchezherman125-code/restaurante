@@ -140,6 +140,7 @@ def clean_db(catalog, monkeypatch, tmp_path):
         conn.execute(text("DELETE FROM users WHERE username NOT IN ('admin', 'mesero1', 'cocina1', 'parrilla1')"))
         conn.execute(text("UPDATE users SET is_active = TRUE"))
         conn.execute(text("UPDATE restaurant_tables SET is_active = TRUE"))
+        conn.execute(text("UPDATE menu_categories SET is_active = TRUE"))
     rate_limiter._attempts.clear()
     rate_limiter._lock_until.clear()
     yield

@@ -1,0 +1,169 @@
+import { expect, test, type APIRequestContext, type Browser, type Page } from "@playwright/test";
+import { ensureShiftOpen, login } from "./helpers";
+
+// Mesas 2 y 3 no las usa ningún otro E2E: estas pruebas no dependen del orden de ejecución.
+
+async function apiAs(browser: Browser, baseURL: string | undefined, username: string) {
+  const context = await browser.newContext({ baseURL });
+  const response = await context.request.post("/api/v1/auth/login", { data: { username, pin: "1234" } });
+  const headers = { Authorization: `Bearer ${(await response.json()).access_token}` };
+  return { request: context.request, headers, close: () => context.close() };
+}
+
+async function activeOrdersOf(request: APIRequestContext, headers: Record<string, string>, table: string) {
+  const orders = await (await request.get("/api/v1/orders/active", { headers })).json();
+  return orders.filter((order: { table_name: string }) => order.table_name === table);
+}
+
+/** Tarjeta de indicador por su etiqueta exacta (las notas de otras tarjetas pueden repetir la palabra). */
+const kpi = (page: Page, label: string) => page.locator(".kpi").filter({ has: page.locator(".label", { hasText: new RegExp(`^${label}$`) }) });
+
+const money = (amount: number) => (amount < 0 ? `-S/ ${(-amount).toFixed(2)}` : `S/ ${amount.toFixed(2)}`);
+
+async function waitForServiceWorker(page: Page) {
+  await page.evaluate(async () => { await navigator.serviceWorker.ready; });
+  await page.waitForFunction(() => Boolean(navigator.serviceWorker.controller));
+}
+
+test("P0-01/P0-02: sin conexión la PWA recarga, la mesa pendiente sigue accesible y sincroniza una sola vez", async ({ browser, baseURL }) => {
+  const admin = await (await browser.newContext()).newPage();
+  await login(admin, "admin");
+  await ensureShiftOpen(admin);
+
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  await login(page, "mesero1");
+  await page.goto("/mesas");
+  await waitForServiceWorker(page);
+
+  await page.getByRole("button", { name: /Mesa 2,/ }).click();
+  await page.getByRole("button", { name: "Abrir mesa", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Mesa 2", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Bebidas", exact: true }).click();
+  await page.locator(".menu-item", { hasText: "Inca Kola 500ml" })
+    .getByRole("button", { name: "Agregar Inca Kola 500ml", exact: true }).click();
+  await page.getByRole("button", { name: /Ver comanda/ }).click();
+
+  await context.setOffline(true);
+  await page.getByTestId("send-command").click();
+  await page.getByRole("button", { name: "Confirmar envío", exact: true }).click();
+  await expect(page.getByTestId("sync-indicator")).toContainText("por enviar");
+
+  // Salir de la mesa y volver a entrar: antes la mesa quedaba deshabilitada.
+  await page.getByRole("button", { name: "Salón" }).click();
+  const tile = page.getByRole("button", { name: /Mesa 2, .*sincronización pendiente/ });
+  await expect(tile).toBeEnabled();
+  await tile.click();
+  await expect(page.getByTestId("local-command-line")).toContainText("Inca Kola 500ml");
+
+  // Recargar sin conexión: la sesión y los datos locales autorizados siguen disponibles.
+  await page.reload();
+  await expect(page).toHaveURL(/\/mesas\//);
+  await expect(page.getByRole("heading", { name: "Mesa 2", exact: true })).toBeVisible();
+  await expect(page.getByTestId("local-command-line")).toContainText("Inca Kola 500ml");
+  await expect(page.getByTestId("sync-indicator")).toContainText("por enviar");
+  await page.getByRole("button", { name: "Salón" }).click();
+  await expect(page.getByRole("button", { name: /Mesa 2, .*sincronización pendiente/ })).toBeVisible();
+
+  const api = await apiAs(browser, baseURL, "admin");
+  expect(await activeOrdersOf(api.request, api.headers, "Mesa 2")).toHaveLength(0);
+
+  await context.setOffline(false);
+  await expect(page.getByTestId("sync-indicator")).toContainText("sincronizado", { timeout: 30_000 });
+  await expect.poll(async () => (await activeOrdersOf(api.request, api.headers, "Mesa 2")).length).toBe(1);
+  const [order] = await activeOrdersOf(api.request, api.headers, "Mesa 2");
+  expect(order.commands).toHaveLength(1);
+  expect(order.items).toHaveLength(1);
+  await expect(page.getByRole("button", { name: /Mesa 2, ocupada/ })).toBeVisible({ timeout: 20_000 });
+
+  // Otra recarga ya conectada no reenvía nada.
+  await page.reload();
+  await expect(page.getByRole("button", { name: /Mesa 2, ocupada/ })).toBeVisible();
+  await page.waitForTimeout(2000);
+  const [after] = await activeOrdersOf(api.request, api.headers, "Mesa 2");
+  expect(after.commands).toHaveLength(1);
+  await api.close();
+});
+
+test("P0-03: un gasto sin ventas nuevas se refleja en el panel y baja el resultado neto", async ({ browser, baseURL }) => {
+  const page = await (await browser.newContext()).newPage();
+  await login(page, "admin");
+  await ensureShiftOpen(page);
+  const api = await apiAs(browser, baseURL, "admin");
+  const before = await (await api.request.get("/api/v1/reports/current-shift", { headers: api.headers })).json();
+
+  await page.goto("/panel");
+  await expect(kpi(page, "Gastos")).toContainText(money(Number(before.total_expenses)));
+
+  await page.goto("/gastos");
+  await page.getByLabel("Monto (S/)").fill("80");
+  await page.getByLabel("Descripción").fill("Carbón E2E");
+  await page.getByRole("button", { name: "Registrar gasto" }).click();
+  await expect(page.getByText("Gasto registrado")).toBeVisible();
+
+  const expectedExpenses = Number(before.total_expenses) + 80;
+  const expectedNet = Number(before.total_sales) - expectedExpenses;
+  await page.goto("/panel");
+  await expect(kpi(page, "Gastos")).toContainText(money(expectedExpenses));
+  await expect(kpi(page, "Resultado neto")).toContainText(money(expectedNet));
+
+  const after = await (await api.request.get("/api/v1/reports/current-shift", { headers: api.headers })).json();
+  expect(Number(after.total_expenses)).toBeCloseTo(expectedExpenses, 2);
+  expect(Number(after.net_result)).toBeCloseTo(expectedNet, 2);
+  await api.close();
+});
+
+test("P0-04: Todo muestra el historial completo y Turno actual vuelve al turno abierto", async ({ browser, baseURL }) => {
+  const page = await (await browser.newContext()).newPage();
+  await login(page, "admin");
+  await ensureShiftOpen(page);
+  const api = await apiAs(browser, baseURL, "admin");
+  const all = await (await api.request.get("/api/v1/reports/sales?scope=all", { headers: api.headers })).json();
+  const current = await (await api.request.get("/api/v1/reports/sales", { headers: api.headers })).json();
+
+  await page.goto("/reportes");
+  await page.getByRole("button", { name: "Todo", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Todo", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByText("Historial completo")).toBeVisible();
+  await expect(kpi(page, "Ventas")).toContainText(money(Number(all.total_sales)));
+  await expect(kpi(page, "Gastos")).toContainText(money(Number(all.total_expenses)));
+  await expect(kpi(page, "Resultado neto")).toContainText(money(Number(all.net_result)));
+
+  await page.getByRole("button", { name: "Turno actual", exact: true }).click();
+  await expect(kpi(page, "Gastos")).toContainText(money(Number(current.total_expenses)));
+  await api.close();
+});
+
+test("P0-05: una mesa ocupada no se puede desactivar y su pedido no cambia", async ({ browser, baseURL }) => {
+  const admin = await (await browser.newContext()).newPage();
+  await login(admin, "admin");
+  await ensureShiftOpen(admin);
+
+  const waiter = await (await browser.newContext()).newPage();
+  await login(waiter, "mesero1");
+  await waiter.goto("/mesas");
+  await waiter.getByRole("button", { name: /Mesa 3,/ }).click();
+  await waiter.getByRole("button", { name: "Abrir mesa", exact: true }).click();
+  await waiter.getByRole("button", { name: "Bebidas", exact: true }).click();
+  await waiter.locator(".menu-item", { hasText: "Agua mineral 620ml" })
+    .getByRole("button", { name: "Agregar Agua mineral 620ml", exact: true }).click();
+  await waiter.getByRole("button", { name: /Ver comanda/ }).click();
+  await waiter.getByTestId("send-command").click();
+  await waiter.getByRole("button", { name: "Confirmar envío", exact: true }).click();
+  await expect(waiter.getByText("Comanda enviada")).toBeVisible();
+
+  await admin.goto("/admin/mesas");
+  await admin.getByRole("button", { name: /Editar Mesa 3, ocupada/ }).click();
+  await expect(admin.getByRole("dialog").getByRole("button", { name: "Inactiva", exact: true })).toBeDisabled();
+
+  const api = await apiAs(browser, baseURL, "admin");
+  const [before] = await activeOrdersOf(api.request, api.headers, "Mesa 3");
+  const table = (await (await api.request.get("/api/v1/tables", { headers: api.headers })).json())
+    .find((entry: { number: number }) => entry.number === 3);
+  const response = await api.request.patch(`/api/v1/tables/${table.id}`, { headers: api.headers, data: { is_active: false } });
+  expect(response.status()).toBe(409);
+  expect((await response.json()).error.code).toBe("TABLE_OCCUPIED");
+  const [after] = await activeOrdersOf(api.request, api.headers, "Mesa 3");
+  expect(after).toMatchObject({ id: before.id, status: before.status, total: before.total });
+  await api.close();
+});

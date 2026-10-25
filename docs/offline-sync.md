@@ -121,7 +121,41 @@ Además de la cola, el cliente:
 - al reabrir la conexión invalida **todas** las queries (`resync()`), lo que refresca mesas,
   pedidos, tableros y reportes sin recargar la página.
 
-## 9. Restricción conocida (§86)
+## 9. Recarga sin conexión y sesión
+
+- **Sesión.** Al iniciar, `restore()` consulta `/auth/me`. Un fallo de red o un 5xx **no** borra
+  tokens ni identidad: se conserva el usuario guardado solo si coincide con el `sub` del token local
+  (`unverified: true`) y se revalida con el servidor al volver la conexión (evento `online`). Solo un
+  rechazo real (401 tras intentar renovar, 403) limpia la sesión. Renovar el token sin red devuelve
+  `NetworkError` y no cierra la sesión.
+- **Sesión expirada en la cola.** Si al sincronizar el servidor rechaza las credenciales, la operación
+  vuelve a `LOCAL_PENDING` con el mismo UUID (no pasa a `SYNC_ERROR`) y la interfaz vuelve al ingreso;
+  al ingresar de nuevo el mismo usuario, la cola continúa.
+- **Datos locales.** `src/offline/queryCache.ts` guarda en `localStorage` (clave
+  `restaurante.queryCache.<usuario>`) solo mesas, carta, pedidos activos, turno, tableros y gastos, con
+  vigencia de 24 h. Se restaura antes del primer render y se borra al cerrar sesión, al expirar la
+  sesión o al cambiar de usuario. Nunca contiene credenciales. Sin red, una consulta fallida conserva
+  la última copia y la pantalla la sigue mostrando.
+- **Rutas.** El service worker sirve `index.html` para cualquier navegación, así que `/mesas/:id`
+  se recupera al recargar.
+
+## 10. Mesa con comanda local
+
+Cada mesa distingue cuatro situaciones:
+
+| Situación | Dónde vive | Interfaz |
+|---|---|---|
+| Borrador local (abierta, sin comanda) | `tableDrafts` (sessionStorage) | «Sin pedido» |
+| Pendiente de sincronización | cola + `pendingOrders` | «Sin enviar»: la mesa se puede abrir y muestra las líneas en cola |
+| Confirmado en el servidor | `orders/active` | «Ocupada» |
+| Error o conflicto | operación `SYNC_ERROR` | «No enviada»: muestra el error y permite reintentar o descartar |
+
+Entrar a una mesa con comanda local nunca vuelve a abrirla: las comandas siguientes se encadenan a la
+misma operación padre. Las cancelaciones y entregas en cola se marcan «pendiente de envío» en el plato
+y no se anuncian como hechas; si el servidor ya muestra el plato cancelado o entregado, manda el servidor.
+Cuando la cola confirma operaciones, la aplicación invalida pedidos, mesas, tableros, gastos y reportes.
+
+## 11. Restricción conocida (§86)
 
 El offline V1 está pensado para el **salón** (mesas y comandas). Si la operación depende de un
 recurso que no existe localmente (por ejemplo, cobrar sin conexión o una mesa creada en otro

@@ -1,4 +1,5 @@
-from datetime import UTC, date, datetime
+from datetime import date
+from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Query
@@ -19,39 +20,21 @@ from app.services import reports as report_service
 router = APIRouter(prefix="/reports", tags=["reports"])
 
 
-def _shifts_in_range(db, date_from: date | None, date_to: date | None) -> list[Shift]:
-    query = db.query(Shift)
-    if date_from:
-        query = query.filter(Shift.opened_at >= datetime.combine(date_from, datetime.min.time(), tzinfo=UTC))
-    if date_to:
-        query = query.filter(Shift.opened_at <= datetime.combine(date_to, datetime.max.time(), tzinfo=UTC))
-    return query.order_by(Shift.opened_at.asc()).all()
+ReportScope = Literal["current", "all"]
 
 
-def _collect_orders(
+def _report_scope(
     db,
     date_from: date | None,
     date_to: date | None,
     shift_id: UUID | None,
+    scope: ReportScope | None,
     waiter_id: UUID | None,
-) -> list[Order]:
-    if shift_id is not None:
-        shifts = [s for s in [db.get(Shift, shift_id)] if s is not None]
-    elif date_from or date_to:
-        shifts = _shifts_in_range(db, date_from, date_to)
-    else:
-        current = db.query(Shift).filter(Shift.status == "OPEN").order_by(Shift.opened_at.desc()).first()
-        if current is None:
-            current = db.query(Shift).order_by(Shift.opened_at.desc()).first()
-        shifts = [current] if current else []
-
-    if not shifts:
-        return []
+) -> tuple[list[Order], list[UUID]]:
+    """Pedidos y turnos de un reporte. Los gastos dependen de los turnos, nunca de que existan pedidos."""
+    shifts = report_service.select_shifts(db, date_from=date_from, date_to=date_to, shift_id=shift_id, scope=scope)
     shift_ids = [s.id for s in shifts]
-    query = db.query(Order).filter(Order.shift_id.in_(shift_ids))
-    if waiter_id is not None:
-        query = query.filter(Order.created_by_waiter_id == waiter_id)
-    return query.order_by(Order.created_at.asc()).all()
+    return report_service.orders_of_shifts(db, shift_ids, waiter_id), shift_ids
 
 
 def _sales_report(db, orders: list[Order], shift_ids: list[UUID]) -> SalesReport:
@@ -70,14 +53,10 @@ def _sales_report(db, orders: list[Order], shift_ids: list[UUID]) -> SalesReport
     )
 
 
-def _shift_ids(orders: list[Order]) -> list[UUID]:
-    return sorted({o.shift_id for o in orders}, key=str)
-
-
 @router.get("/current-shift", response_model=SalesReport)
 def current_shift_sales(db: DbSession, _: AdminUser) -> SalesReport:
-    orders = _collect_orders(db, None, None, None, None)
-    return _sales_report(db, orders, _shift_ids(orders))
+    orders, shift_ids = _report_scope(db, None, None, None, None, None)
+    return _sales_report(db, orders, shift_ids)
 
 
 @router.get("/sales", response_model=SalesReport)
@@ -88,9 +67,10 @@ def sales_report(
     date_to: date | None = Query(default=None),
     shift_id: UUID | None = Query(default=None),
     waiter_id: UUID | None = Query(default=None),
+    scope: ReportScope | None = Query(default=None),
 ) -> SalesReport:
-    orders = _collect_orders(db, date_from, date_to, shift_id, waiter_id)
-    return _sales_report(db, orders, _shift_ids(orders))
+    orders, shift_ids = _report_scope(db, date_from, date_to, shift_id, scope, waiter_id)
+    return _sales_report(db, orders, shift_ids)
 
 
 @router.get("/products", response_model=ProductsReport)
@@ -101,8 +81,9 @@ def products_report(
     date_to: date | None = Query(default=None),
     shift_id: UUID | None = Query(default=None),
     waiter_id: UUID | None = Query(default=None),
+    scope: ReportScope | None = Query(default=None),
 ) -> ProductsReport:
-    orders = _collect_orders(db, date_from, date_to, shift_id, waiter_id)
+    orders, _shift_ids = _report_scope(db, date_from, date_to, shift_id, scope, waiter_id)
     data = report_service.products_metrics(orders)
     return ProductsReport(
         lines=[ProductReportLine(**line) for line in data["lines"]],
@@ -117,8 +98,9 @@ def preparation_report(
     date_from: date | None = Query(default=None),
     date_to: date | None = Query(default=None),
     shift_id: UUID | None = Query(default=None),
+    scope: ReportScope | None = Query(default=None),
 ) -> PreparationReport:
-    orders = _collect_orders(db, date_from, date_to, shift_id, None)
+    orders, _shift_ids = _report_scope(db, date_from, date_to, shift_id, scope, None)
     prep = report_service.preparation_metrics(db, orders)
     lines = [
         PreparationReportLine(

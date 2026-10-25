@@ -4,6 +4,7 @@ import { tablesApi } from "../../api/endpoints";
 import { Modal } from "../../components/Modal";
 import { Icon } from "../../components/Icon";
 import { EmptyState, PageHeader, SearchField, SkeletonList } from "../../components/Layout";
+import { ApiError } from "../../api/client";
 import { errorMessage } from "../../lib/send";
 import { useUi } from "../../stores/ui";
 import type { RestaurantTable } from "../../types/api";
@@ -13,6 +14,13 @@ interface FormState {
   name: string;
   number: string;
   is_active: boolean;
+  /** Tenía un pedido vivo al abrir el formulario; el servidor tiene la última palabra. */
+  occupied?: boolean;
+}
+
+/** Un pedido vivo manda sobre la desactivación: la mesa sigue ocupada hasta terminar de atenderla. */
+function tableState(table: RestaurantTable): "OPEN" | "INACTIVE" | "FREE" {
+  return table.status === "OPEN" || table.order_id ? "OPEN" : !table.is_active ? "INACTIVE" : "FREE";
 }
 
 export function TablesAdminPage() {
@@ -44,7 +52,13 @@ export function TablesAdminPage() {
       setForm(null);
       void queryClient.invalidateQueries({ queryKey: ["tables"] });
     } catch (error) {
-      toast("error", "No se pudo guardar", errorMessage(error));
+      if (error instanceof ApiError && error.code === "TABLE_OCCUPIED") {
+        toast("error", "No se puede desactivar la mesa", error.message);
+        setForm({ ...form, is_active: true, occupied: true });
+        void queryClient.invalidateQueries({ queryKey: ["tables"] });
+      } else {
+        toast("error", "No se pudo guardar", errorMessage(error));
+      }
     } finally {
       setBusy(false);
     }
@@ -54,12 +68,12 @@ export function TablesAdminPage() {
     const q = query.trim().toLocaleLowerCase("es-PE");
     return (tables.data ?? [])
       .filter((table) => {
-        const state = !table.is_active ? "INACTIVE" : table.status === "OPEN" ? "OPEN" : "FREE";
+        const state = tableState(table);
         return (filter === "ALL" || filter === state) && (!q || `${table.name} ${table.number}`.toLocaleLowerCase("es-PE").includes(q));
       })
       .sort((a, b) => a.number - b.number);
   }, [tables.data, query, filter]);
-  const count = (state: string) => (tables.data ?? []).filter((table) => (!table.is_active ? "INACTIVE" : table.status === "OPEN" ? "OPEN" : "FREE") === state).length;
+  const count = (state: string) => (tables.data ?? []).filter((table) => tableState(table) === state).length;
 
   if (tables.isLoading) return <div className="page"><PageHeader title="Mesas" /><SkeletonList rows={4} height={96} label="Cargando mesas" /></div>;
 
@@ -94,17 +108,17 @@ export function TablesAdminPage() {
           {rows.map((table: RestaurantTable) => (
             <button
               key={table.id}
-              className={`admin-table ${!table.is_active ? "inactive" : table.status === "OPEN" ? "open" : ""}`}
-              onClick={() => setForm({ id: table.id, name: table.name, number: String(table.number), is_active: table.is_active })}
-              aria-label={`Editar ${table.name}, ${!table.is_active ? "inactiva" : table.status === "OPEN" ? "ocupada" : "libre"}`}
+              className={`admin-table ${tableState(table) === "OPEN" ? "open" : tableState(table) === "INACTIVE" ? "inactive" : ""}`}
+              onClick={() => setForm({ id: table.id, name: table.name, number: String(table.number), is_active: table.is_active, occupied: tableState(table) === "OPEN" })}
+              aria-label={`Editar ${table.name}, ${tableState(table) === "OPEN" ? "ocupada" : tableState(table) === "INACTIVE" ? "inactiva" : "libre"}`}
             >
               <span className="num admin-table-number">{String(table.number).padStart(2, "0")}</span>
               <span className="grow" style={{ textAlign: "left" }}>
                 <strong>{table.name}</strong>
                 <span className="hint" style={{ display: "block" }}>Mesa n.º {table.number}</span>
               </span>
-              {!table.is_active ? <span className="chip"><Icon name="ban" />Inactiva</span>
-                : table.status === "OPEN" ? <span className="chip ember"><Icon name="user" />Ocupada</span>
+              {tableState(table) === "OPEN" ? <span className="chip ember"><Icon name="user" />Ocupada{table.is_active ? "" : " · inactiva"}</span>
+                : tableState(table) === "INACTIVE" ? <span className="chip"><Icon name="ban" />Inactiva</span>
                 : <span className="chip free"><Icon name="chair" />Libre</span>}
               <Icon name="edit" className="edit-hint" />
             </button>
@@ -139,9 +153,14 @@ export function TablesAdminPage() {
                 <span className="label" id="table-state-label">Estado</span>
                 <div className="segmented" role="group" aria-labelledby="table-state-label">
                   <button type="button" className={form.is_active ? "active" : ""} aria-pressed={form.is_active} onClick={() => setForm({ ...form, is_active: true })}>Activa</button>
-                  <button type="button" className={!form.is_active ? "active" : ""} aria-pressed={!form.is_active} onClick={() => setForm({ ...form, is_active: false })}>Inactiva</button>
+                  <button type="button" className={!form.is_active ? "active" : ""} aria-pressed={!form.is_active}
+                    disabled={form.occupied && form.is_active} onClick={() => setForm({ ...form, is_active: false })}>Inactiva</button>
                 </div>
-                <span className="hint">Una mesa inactiva no aparece disponible para abrir pedidos.</span>
+                <span className="hint">
+                  {form.occupied && form.is_active
+                    ? "Tiene un pedido activo: podrá desactivarla cuando termine de atenderse."
+                    : "Una mesa inactiva no aparece disponible para abrir pedidos."}
+                </span>
               </div>
             ) : null}
             <button type="submit" className="visually-hidden" tabIndex={-1}>Guardar</button>

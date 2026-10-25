@@ -4,6 +4,7 @@ import { flushQueue, resetBackoff } from "../offline/queue";
 import { deleteOperation, listOperations } from "../offline/queue-db";
 import { useSession } from "../stores/session";
 import { fakeJwt } from "../test/jwt";
+import { expensesApi } from "../api/endpoints";
 import { sendOrQueue } from "./send";
 
 beforeEach(async () => {
@@ -104,5 +105,67 @@ describe("sendOrQueue", () => {
 
     expect(outcome.queued).toBe(true);
     expect((await listOperations())[0]).toMatchObject({ status: "LOCAL_PENDING", attempt_count: 1 });
+  });
+});
+
+describe("envío inmediato ligado a quien lo inicia (sin pasar por la cola)", () => {
+  const json = (body: unknown, status = 201) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+  const switchToAdmin = () => {
+    useSession.setState({ user: { id: "admin", username: "admin", display_name: "Dueño", role: "ADMIN", is_active: true, created_at: "" } });
+    setTokens(fakeJwt("admin"), "refresh-admin");
+  };
+  const registerExpense = () => sendOrQueue(
+    { operation_type: "REGISTER_EXPENSE", path: "/api/v1/expenses", method: "POST", body: { amount: "0.01", description: "x", shift_id: "s1" } },
+    (operationId) => expensesApi.create({ amount: "0.01", description: "x", shift_id: "s1" }, operationId),
+  );
+
+  it("cambio de A a B antes del 401: sin renovación ni reintento, operación pendiente de A y sesión de B intacta", async () => {
+    const fetchMock = vi.fn().mockImplementationOnce(async () => {
+      switchToAdmin();
+      return json({ error: { code: "INVALID_TOKEN", message: "Sesión revocada" } }, 401);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const outcome = await registerExpense();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(outcome.queued).toBe(true);
+    const [stored] = await listOperations();
+    expect(stored).toMatchObject({ client_operation_id: outcome.operationId, owner_user_id: "w1", status: "LOCAL_PENDING" });
+    const sentKey = ((fetchMock.mock.calls[0][1] as RequestInit).headers as Record<string, string>)["Idempotency-Key"];
+    expect(sentKey).toBe(outcome.operationId);
+    expect(localStorage.getItem("restaurante.refresh")).toBe("refresh-admin");
+    expect(useSession.getState().user?.id).toBe("admin");
+  });
+
+  it("cambio de A a B durante la renovación: no se reemplazan los tokens de B ni se reintenta", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(json({}, 401))
+      .mockImplementationOnce(async () => {
+        switchToAdmin();
+        return json({ access_token: fakeJwt("w1"), refresh_token: "refresh-w1-nuevo" }, 200);
+      });
+    vi.stubGlobal("fetch", fetchMock);
+    const outcome = await registerExpense();
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(outcome.queued).toBe(true);
+    expect(localStorage.getItem("restaurante.refresh")).toBe("refresh-admin");
+    expect((await listOperations())[0]).toMatchObject({ client_operation_id: outcome.operationId, owner_user_id: "w1", status: "LOCAL_PENDING" });
+  });
+
+  it("si A conserva la sesión, renueva y reintenta con el mismo UUID y la operación local se cierra", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(json({}, 401))
+      .mockResolvedValueOnce(json({ access_token: fakeJwt("w1"), refresh_token: "refresh-w1-nuevo" }, 200))
+      .mockResolvedValueOnce(json({ id: "expense-1" }));
+    vi.stubGlobal("fetch", fetchMock);
+    const outcome = await registerExpense();
+
+    expect(outcome.queued).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const keys = [0, 2].map((call) => ((fetchMock.mock.calls[call][1] as RequestInit).headers as Record<string, string>)["Idempotency-Key"]);
+    expect(keys[0]).toBe(keys[1]);
+    expect(localStorage.getItem("restaurante.refresh")).toBe("refresh-w1-nuevo");
+    expect(await listOperations()).toEqual([]);
   });
 });

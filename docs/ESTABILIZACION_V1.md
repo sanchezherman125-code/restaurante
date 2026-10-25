@@ -300,3 +300,40 @@ más peticiones que conexiones.
 
 Pendiente: la validación de la PWA instalada en dispositivos físicos con red intermitente real no se
 hizo en este entorno.
+
+---
+
+# Tercera auditoría Codex (sobre `7c752a6`): hallazgo A en el envío inmediato
+
+- **Causa.** Solo `flushQueue` pasaba `owner` a `apiRequest`. El envío inmediato
+  (`sendOrQueue → expensesApi.create`) no lo hacía: ante un 401 tras cambiar de A a B, renovaba con la
+  sesión de B, reintentaba, registraba el gasto como de B y `sendOrQueue` borraba la operación de A.
+- **Solución.** Toda petición autenticada queda ligada por defecto al dueño del token guardado al iniciarla
+  (`owner` explícito o, si no se indica, el `sub` del token), durante el envío, la renovación y el
+  reintento. Así se cubren todas las llamadas directas sin depender de que cada endpoint lo propague.
+  `sendOrQueue` trata `OwnerChangedError` conservando la operación `LOCAL_PENDING` con su dueño y UUID
+  (no la borra) y avisa «Sesión cambiada».
+- **Pruebas.**
+  - `send.test.ts` usa `sendOrQueue` y `expensesApi.create` reales: cambio de A a B antes del 401 y
+    durante la renovación (ningún reintento, operación pendiente de A con el mismo UUID, credenciales de
+    B intactas), más el camino normal de A (renovación y reintento con el mismo UUID).
+  - `client.test.ts`: dueño implícito.
+  - E2E «Codex 3» con el servidor real por la vía inmediata: ningún gasto creado, sin `/auth/refresh`,
+    un solo envío, operación de A pendiente y refresh token de B válido en el servidor.
+  - Con `7c752a6` fallan las dos pruebas de cambio, la de dueño implícito y el E2E, que registra una
+    renovación con la sesión de B.
+
+## Resultados de esta ronda
+
+| Verificación | Resultado |
+|---|---|
+| Ruff | sin errores |
+| Pytest (PostgreSQL real) | 233 aprobadas |
+| Alembic check | sin operaciones pendientes |
+| TypeScript / ESLint | sin errores |
+| Vitest | 158 aprobadas (4 nuevas) |
+| Build frontend/PWA | correcto (lo ejecuta Playwright) |
+| Playwright completo | 28 aprobadas, 1 omitida (`screenshots.spec.ts`, requiere `SHOTS_DIR`) |
+| Muestreo durante Playwright | `/health` ≤ 25 ms con el servidor activo, sin timeouts reales; ninguna transacción ociosa ≥ 1 s; 0 conexiones al terminar |
+
+Pendiente: la validación de la PWA instalada en dispositivos físicos con red intermitente real.

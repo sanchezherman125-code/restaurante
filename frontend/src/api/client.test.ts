@@ -71,6 +71,18 @@ describe("sesión y conectividad", () => {
 });
 
 describe("peticiones ligadas a un usuario", () => {
+  it("sin indicar dueño, la petición queda ligada a quien la inició: un 401 tras cambiar de usuario no renueva", async () => {
+    setTokens(fakeJwt("ana"), "refresh-ana");
+    const fetchMock = vi.fn().mockImplementationOnce(async () => {
+      setTokens(fakeJwt("luis"), "refresh-luis");
+      return new Response("{}", { status: 401 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(apiRequest("/api/v1/orders/active")).rejects.toBeInstanceOf(OwnerChangedError);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(getRefreshToken()).toBe("refresh-luis");
+  });
+
   it("no sale si las credenciales guardadas son de otro usuario", async () => {
     setTokens(fakeJwt("luis"), "refresh-luis");
     const fetchMock = vi.fn();

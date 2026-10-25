@@ -70,8 +70,8 @@ interface RequestOptions {
   signal?: AbortSignal;
   formData?: FormData;
   responseType?: "blob";
-  /** Usuario en cuyo nombre viaja la petición (cola offline): ni ella, ni su renovación, ni su reintento
-   * usan credenciales de otro usuario. */
+  /** Usuario en cuyo nombre viaja la petición: ni ella, ni su renovación, ni su reintento usan credenciales
+   * de otro usuario. Por defecto, el dueño del token guardado al iniciar la petición. */
   owner?: string;
 }
 
@@ -156,7 +156,9 @@ function ensureOwner(owner: string | undefined): void {
 }
 
 export async function apiRequest<T>(path: string, options: RequestOptions = {}, refreshedOnce = false): Promise<T> {
-  const { method = "GET", body, idempotencyKey, auth = true, signal, formData, owner } = options;
+  const { method = "GET", body, idempotencyKey, auth = true, signal, formData } = options;
+  // Toda petición autenticada queda ligada a quien la inició (envío inmediato o cola).
+  const owner = options.owner ?? (auth ? storedTokenSubject() ?? undefined : undefined);
   ensureOwner(owner);
 
   const headers: Record<string, string> = { "X-Device-Id": getDeviceId() };
@@ -187,7 +189,7 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}, 
     const outcome: RefreshOutcome = refreshedOnce ? "invalid" : await refreshSession();
     if (outcome === "refreshed") {
       // El reintento vuelve a comprobar al dueño antes de salir (ensureOwner al inicio).
-      return apiRequest<T>(path, { ...options, auth: true }, true);
+      return apiRequest<T>(path, { ...options, auth: true, owner }, true);
     }
     // Sin conexión para renovar: la sesión local se conserva y la operación queda pendiente.
     if (outcome === "unreachable") throw new NetworkError();

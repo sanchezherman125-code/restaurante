@@ -1,4 +1,4 @@
-import { ApiError, NetworkError } from "../api/client";
+import { ApiError, NetworkError, OwnerChangedError } from "../api/client";
 import { enqueue, type NewOperation } from "../offline/queue";
 import { deleteOperation, putOperation } from "../offline/queue-db";
 import { useUi } from "../stores/ui";
@@ -21,6 +21,13 @@ export async function sendOrQueue(op: NewOperation, exec: (clientOperationId: st
     await deleteOperation(queued.client_operation_id);
     return { queued: false, operationId: null };
   } catch (error) {
+    if (error instanceof OwnerChangedError) {
+      // Otro usuario tomó la sesión durante el envío: nada se registró a su nombre. La operación queda
+      // pendiente para su dueño original, con el mismo UUID, y se enviará cuando vuelva a ingresar.
+      await putOperation({ ...queued, status: "LOCAL_PENDING" });
+      useUi.getState().toast("warning", "Sesión cambiada", "La operación quedó guardada para el usuario que la registró.");
+      return { queued: true, operationId: queued.client_operation_id };
+    }
     if (error instanceof NetworkError || (error instanceof ApiError && error.status >= 500)) {
       await putOperation({
         ...queued,

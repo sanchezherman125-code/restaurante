@@ -327,3 +327,59 @@ test("Codex 2a: el 401 de una operación de A tras cambiar a B no renueva ni reg
   expect(stillValid.status()).toBe(200);
   await adminApi.close();
 });
+
+test("Codex 3: el envío inmediato de A no renueva ni registra a nombre de B tras el 401", async ({ browser, baseURL }) => {
+  const admin = await (await browser.newContext()).newPage();
+  await login(admin, "admin");
+  await ensureShiftOpen(admin);
+  const adminApi = await apiAs(browser, baseURL, "admin");
+  const adminTokens = await (await adminApi.request.post("/api/v1/auth/login", { data: { username: "admin", pin: "1234" } })).json();
+
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  await login(page, "mesero1");
+  await page.goto("/gastos");
+  await expect(page.getByRole("heading", { name: "Gastos del turno" })).toBeVisible();
+  const waiterId = await page.evaluate(() => JSON.parse(localStorage.getItem("restaurante.session") ?? "{}").state?.user?.id as string);
+
+  const refreshCalls: string[] = [];
+  page.on("request", (request) => { if (request.url().includes("/api/v1/auth/refresh")) refreshCalls.push(request.url()); });
+  let intercepted = 0;
+  await context.route("**/api/v1/expenses", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    intercepted += 1;
+    // Mientras viaja el envío inmediato de A, el dispositivo pasa a tener las credenciales de B.
+    await page.evaluate(({ access, refresh }) => {
+      localStorage.setItem("restaurante.access", access);
+      localStorage.setItem("restaurante.refresh", refresh);
+    }, { access: adminTokens.access_token, refresh: adminTokens.refresh_token });
+    await route.fulfill({ status: 401, contentType: "application/json",
+      body: JSON.stringify({ error: { code: "INVALID_TOKEN", message: "Sesión expirada o revocada.", details: {} } }) });
+  });
+
+  // Con conexión: envío inmediato (sendOrQueue → expensesApi.create), sin pasar por la cola.
+  await page.getByLabel("Monto (S/)").fill("0.01");
+  await page.getByLabel("Descripción").fill("Gasto directo 401 E2E");
+  await page.getByRole("button", { name: "Registrar gasto" }).click();
+  await expect.poll(() => intercepted).toBeGreaterThanOrEqual(1);
+  await page.waitForTimeout(3000); // tiempo para cualquier renovación o reintento indebido
+
+  // Primero lo que importa: nada se registró a nombre de B.
+  const expenses = await (await adminApi.request.get("/api/v1/expenses", { headers: adminApi.headers })).json();
+  expect(expenses.some((expense: { description: string }) => expense.description === "Gasto directo 401 E2E")).toBe(false);
+  expect(refreshCalls).toEqual([]);
+  expect(intercepted).toBe(1);
+  await expect(page.getByText("Sesión cambiada")).toBeVisible();
+  const stored = await page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((resolve) => { const r = indexedDB.open("restaurante-offline", 1); r.onsuccess = () => resolve(r.result); });
+    const ops = await new Promise<{ status: string; owner_user_id: string; client_operation_id: string; body: { description?: string } }[]>((resolve) => {
+      const r = db.transaction("queue").objectStore("queue").getAll(); r.onsuccess = () => resolve(r.result);
+    });
+    return { ops, refresh: localStorage.getItem("restaurante.refresh") };
+  });
+  expect(stored.ops).toHaveLength(1);
+  expect(stored.ops[0]).toMatchObject({ status: "LOCAL_PENDING", owner_user_id: waiterId, body: { description: "Gasto directo 401 E2E" } });
+  expect(stored.refresh).toBe(adminTokens.refresh_token);
+  expect((await adminApi.request.post("/api/v1/auth/refresh", { data: { refresh_token: adminTokens.refresh_token } })).status()).toBe(200);
+  await adminApi.close();
+});

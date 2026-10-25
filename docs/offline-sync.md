@@ -167,7 +167,9 @@ Cuando la cola confirma operaciones, la aplicación invalida pedidos, mesas, tab
   una lectura completa del usuario actual (`ownerId`), iniciada después de crear el registro.
 - `flushQueue` envía en nombre de un único usuario: se detiene si la sesión o el `sub` del token cambian
   durante el recorrido, y la operación interrumpida vuelve intacta a `LOCAL_PENDING`. La identidad viaja
-  con toda la petición (`apiRequest({ owner })`): antes de enviar, al recibir un 401 y antes del reintento
+  con toda petición autenticada: `apiRequest` toma por defecto el `sub` del token guardado al iniciarla
+  (la cola lo indica explícitamente con `owner`), así que cubre también el envío inmediato de
+  `sendOrQueue`, que ante `OwnerChangedError` conserva la operación pendiente para su dueño con el mismo UUID: antes de enviar, al recibir un 401 y antes del reintento
   se comprueba que el token guardado siga siendo del dueño. Si cambió, no se renueva con las credenciales
   del otro usuario, no se reintenta, no se invalida su sesión y la operación vuelve a su dueño
   (`OwnerChangedError`). Una renovación nunca reemplaza tokens que otra sesión guardó mientras tanto.

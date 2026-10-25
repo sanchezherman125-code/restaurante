@@ -337,3 +337,41 @@ hizo en este entorno.
 | Muestreo durante Playwright | `/health` ≤ 25 ms con el servidor activo, sin timeouts reales; ninguna transacción ociosa ≥ 1 s; 0 conexiones al terminar |
 
 Pendiente: la validación de la PWA instalada en dispositivos físicos con red intermitente real.
+
+---
+
+# Cuarta auditoría Codex (sobre `41100be`): cambio de usuario durante la escritura inicial
+
+- **Causa.** `sendOrQueue` creaba la operación para A y esperaba la escritura en IndexedDB. Después
+  ejecutaba la petición, y `apiRequest` tomaba como dueño el `sub` del token *en ese momento*. Si B había
+  ingresado durante la escritura, la petición salía como B (201, `created_by_user_id = B`) y la operación
+  de A se borraba. No hacía falta un 401.
+- **Solución.** Tras `await enqueue(...)`, `sendOrQueue` comprueba que la sesión y el token sigan siendo
+  de `queued.owner_user_id`; si no, aplica el tratamiento de `OwnerChangedError` (operación pendiente de A,
+  mismo UUID, ninguna petición). La petición de `exec` se liga explícitamente a ese dueño con
+  `withRequestOwner` (vinculación síncrona que `apiRequest` lee al iniciar), así que no depende de las
+  credenciales guardadas. Todos los `exec` actuales inician su petición sin `await` previo.
+- **Pruebas.**
+  - `send.test.ts`: cambio de A a B durante la escritura inicial (cero peticiones, operación pendiente de
+    A, credenciales de B intactas) y cambio solo de las credenciales guardadas. Se conservan las pruebas
+    de 401 y renovación.
+  - `client.test.ts`: `withRequestOwner`.
+  - E2E «Codex 4» en Chromium, con IndexedDB y servidor reales y sin simular respuestas HTTP: una
+    transacción ocupa la cola, B ingresa y se libera. Cero `POST /expenses` y `/auth/refresh`, ningún
+    gasto, operación de A pendiente y refresh token de B válido.
+  - Con `41100be` fallan las dos unitarias y el E2E, que registra el gasto como `admin` en la base E2E.
+
+## Resultados de esta ronda
+
+| Verificación | Resultado |
+|---|---|
+| Ruff | sin errores |
+| Pytest (PostgreSQL real) | 233 aprobadas |
+| Alembic check | sin operaciones pendientes |
+| TypeScript / ESLint | sin errores |
+| Vitest | 161 aprobadas (3 nuevas) |
+| Build frontend/PWA | correcto (lo ejecuta Playwright) |
+| Playwright completo | 29 aprobadas, 1 omitida (`screenshots.spec.ts`, requiere `SHOTS_DIR`) |
+| Muestreo durante Playwright | `/health` ≤ 40 ms con el servidor activo, sin timeouts reales; ninguna transacción ociosa ≥ 1 s; 0 conexiones al terminar |
+
+Pendiente: la validación de la PWA instalada en dispositivos físicos con red intermitente real.

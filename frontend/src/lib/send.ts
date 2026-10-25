@@ -1,6 +1,7 @@
-import { ApiError, NetworkError, OwnerChangedError } from "../api/client";
+import { ApiError, NetworkError, OwnerChangedError, storedTokenSubject, withRequestOwner } from "../api/client";
 import { enqueue, type NewOperation } from "../offline/queue";
 import { deleteOperation, putOperation } from "../offline/queue-db";
+import { useSession } from "../stores/session";
 import { useUi } from "../stores/ui";
 
 export interface SendOutcome {
@@ -15,9 +16,16 @@ export interface SendOutcome {
 export async function sendOrQueue(op: NewOperation, exec: (clientOperationId: string) => Promise<unknown>): Promise<SendOutcome> {
   // Persist as SENDING before the request. A queue flush must never be able to
   // claim this operation while its direct request is in flight.
+  // El dueño se fija al crear la operación (usuario en sesión al iniciar el registro).
   const queued = await enqueue(op, "SENDING");
+  const owner = queued.owner_user_id;
   try {
-    await exec(queued.client_operation_id);
+    // Mientras se guardaba en IndexedDB pudo ingresar otro usuario: entonces no se envía nada.
+    if (!owner || useSession.getState().user?.id !== owner || storedTokenSubject() !== owner) {
+      throw new OwnerChangedError();
+    }
+    // ``exec`` debe iniciar su petición sin ``await`` previo: así queda ligada al dueño de la operación.
+    await withRequestOwner(owner, () => exec(queued.client_operation_id));
     await deleteOperation(queued.client_operation_id);
     return { queued: false, operationId: null };
   } catch (error) {

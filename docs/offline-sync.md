@@ -169,7 +169,10 @@ Cuando la cola confirma operaciones, la aplicación invalida pedidos, mesas, tab
   durante el recorrido, y la operación interrumpida vuelve intacta a `LOCAL_PENDING`. La identidad viaja
   con toda petición autenticada: `apiRequest` toma por defecto el `sub` del token guardado al iniciarla
   (la cola lo indica explícitamente con `owner`), así que cubre también el envío inmediato de
-  `sendOrQueue`, que ante `OwnerChangedError` conserva la operación pendiente para su dueño con el mismo UUID: antes de enviar, al recibir un 401 y antes del reintento
+  `sendOrQueue`. Este fija el dueño al crear la operación, vuelve a comprobarlo después de guardarla en
+IndexedDB (si mientras tanto ingresó otro usuario, no envía nada) y liga la petición de `exec` a ese
+dueño con `withRequestOwner`. Ante `OwnerChangedError` conserva la operación pendiente para su dueño con
+el mismo UUID: antes de enviar, al recibir un 401 y antes del reintento
   se comprueba que el token guardado siga siendo del dueño. Si cambió, no se renueva con las credenciales
   del otro usuario, no se reintenta, no se invalida su sesión y la operación vuelve a su dueño
   (`OwnerChangedError`). Una renovación nunca reemplaza tokens que otra sesión guardó mientras tanto.

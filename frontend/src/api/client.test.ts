@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError, NetworkError, OwnerChangedError, apiRequest, getAccessToken, getRefreshToken, isConnectivityError, onSessionExpired, setTokens,
-  storedTokenSubject,
+  storedTokenSubject, withRequestOwner,
 } from "./client";
 import { fakeJwt } from "../test/jwt";
 
@@ -71,6 +71,14 @@ describe("sesión y conectividad", () => {
 });
 
 describe("peticiones ligadas a un usuario", () => {
+  it("una petición iniciada dentro de withRequestOwner queda ligada a ese usuario aunque el token sea de otro", async () => {
+    setTokens(fakeJwt("luis"), "refresh-luis");
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(withRequestOwner("ana", () => apiRequest("/api/v1/expenses", { method: "POST" }))).rejects.toBeInstanceOf(OwnerChangedError);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("sin indicar dueño, la petición queda ligada a quien la inició: un 401 tras cambiar de usuario no renueva", async () => {
     setTokens(fakeJwt("ana"), "refresh-ana");
     const fetchMock = vi.fn().mockImplementationOnce(async () => {

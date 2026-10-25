@@ -168,4 +168,31 @@ describe("envío inmediato ligado a quien lo inicia (sin pasar por la cola)", ()
     expect(localStorage.getItem("restaurante.refresh")).toBe("refresh-w1-nuevo");
     expect(await listOperations()).toEqual([]);
   });
+
+  it("cambio de A a B durante la escritura inicial en IndexedDB: cero peticiones y operación pendiente de A", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const sending = registerExpense();   // la operación de A se crea y empieza a guardarse
+    switchToAdmin();                       // B ingresa antes de que termine la escritura
+    const outcome = await sending;
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(outcome.queued).toBe(true);
+    expect(await listOperations()).toEqual([
+      expect.objectContaining({ client_operation_id: outcome.operationId, owner_user_id: "w1", status: "LOCAL_PENDING" }),
+    ]);
+    expect(localStorage.getItem("restaurante.refresh")).toBe("refresh-admin");
+    expect(useSession.getState().user?.id).toBe("admin");
+  });
+
+  it("solo cambian las credenciales guardadas (la sesión en memoria sigue siendo A): tampoco se envía", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const sending = registerExpense();
+    setTokens(fakeJwt("admin"), "refresh-admin");
+    const outcome = await sending;
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect((await listOperations())[0]).toMatchObject({ client_operation_id: outcome.operationId, owner_user_id: "w1", status: "LOCAL_PENDING" });
+  });
 });
+

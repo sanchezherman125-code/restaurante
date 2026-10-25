@@ -151,6 +151,22 @@ export function storedTokenSubject(): string | null {
   }
 }
 
+let boundOwner: string | undefined;
+
+/**
+ * Liga a ``owner`` las peticiones que ``start`` inicia de forma síncrona (antes de su primer ``await``):
+ * su identidad no depende de qué credenciales haya guardadas en ese momento.
+ */
+export function withRequestOwner<T>(owner: string, start: () => T): T {
+  const previous = boundOwner;
+  boundOwner = owner;
+  try {
+    return start();
+  } finally {
+    boundOwner = previous;
+  }
+}
+
 function ensureOwner(owner: string | undefined): void {
   if (owner !== undefined && storedTokenSubject() !== owner) throw new OwnerChangedError();
 }
@@ -158,7 +174,7 @@ function ensureOwner(owner: string | undefined): void {
 export async function apiRequest<T>(path: string, options: RequestOptions = {}, refreshedOnce = false): Promise<T> {
   const { method = "GET", body, idempotencyKey, auth = true, signal, formData } = options;
   // Toda petición autenticada queda ligada a quien la inició (envío inmediato o cola).
-  const owner = options.owner ?? (auth ? storedTokenSubject() ?? undefined : undefined);
+  const owner = options.owner ?? boundOwner ?? (auth ? storedTokenSubject() ?? undefined : undefined);
   ensureOwner(owner);
 
   const headers: Record<string, string> = { "X-Device-Id": getDeviceId() };

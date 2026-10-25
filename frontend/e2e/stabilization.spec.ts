@@ -383,3 +383,57 @@ test("Codex 3: el envío inmediato de A no renueva ni registra a nombre de B tra
   expect((await adminApi.request.post("/api/v1/auth/refresh", { data: { refresh_token: adminTokens.refresh_token } })).status()).toBe(200);
   await adminApi.close();
 });
+
+test("Codex 4: si B ingresa mientras se guarda la operación de A en IndexedDB, no sale ninguna petición", async ({ browser, baseURL }) => {
+  const admin = await (await browser.newContext()).newPage();
+  await login(admin, "admin");
+  await ensureShiftOpen(admin);
+  const adminApi = await apiAs(browser, baseURL, "admin");
+  const adminTokens = await (await adminApi.request.post("/api/v1/auth/login", { data: { username: "admin", pin: "1234" } })).json();
+
+  const page = await (await browser.newContext()).newPage();
+  await login(page, "mesero1");
+  await page.goto("/gastos");
+  await expect(page.getByRole("heading", { name: "Gastos del turno" })).toBeVisible();
+  const waiterId = await page.evaluate(() => JSON.parse(localStorage.getItem("restaurante.session") ?? "{}").state?.user?.id as string);
+  const expensePosts: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "POST" && /\/api\/v1\/(expenses|auth\/refresh)$/.test(request.url())) expensePosts.push(request.url());
+  });
+
+  // Una transacción de escritura ocupa la cola: la escritura inicial del gasto queda esperando.
+  await page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((resolve) => { const r = indexedDB.open("restaurante-offline", 1); r.onsuccess = () => resolve(r.result); });
+    const store = db.transaction("queue", "readwrite").objectStore("queue");
+    const w = window as unknown as { __releaseQueue?: boolean };
+    const spin = () => { if (!w.__releaseQueue) store.get("ocupada").onsuccess = spin; };
+    spin();
+  });
+  await page.getByLabel("Monto (S/)").fill("0.01");
+  await page.getByLabel("Descripción").fill("Gasto escritura demorada E2E");
+  await page.getByRole("button", { name: "Registrar gasto" }).click();
+  await page.waitForTimeout(500);
+  // B ingresa en el dispositivo mientras la operación de A espera a guardarse; luego se libera la cola.
+  await page.evaluate(({ access, refresh }) => {
+    localStorage.setItem("restaurante.access", access);
+    localStorage.setItem("restaurante.refresh", refresh);
+    (window as unknown as { __releaseQueue?: boolean }).__releaseQueue = true;
+  }, { access: adminTokens.access_token, refresh: adminTokens.refresh_token });
+  await page.waitForTimeout(3000);
+
+  const expenses = await (await adminApi.request.get("/api/v1/expenses", { headers: adminApi.headers })).json();
+  expect(expenses.some((expense: { description: string }) => expense.description === "Gasto escritura demorada E2E")).toBe(false);
+  expect(expensePosts).toEqual([]);
+  const stored = await page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((resolve) => { const r = indexedDB.open("restaurante-offline", 1); r.onsuccess = () => resolve(r.result); });
+    const ops = await new Promise<{ status: string; owner_user_id: string; body: { description?: string } }[]>((resolve) => {
+      const r = db.transaction("queue").objectStore("queue").getAll(); r.onsuccess = () => resolve(r.result);
+    });
+    return { ops, refresh: localStorage.getItem("restaurante.refresh") };
+  });
+  expect(stored.ops).toHaveLength(1);
+  expect(stored.ops[0]).toMatchObject({ status: "LOCAL_PENDING", owner_user_id: waiterId, body: { description: "Gasto escritura demorada E2E" } });
+  expect(stored.refresh).toBe(adminTokens.refresh_token);
+  expect((await adminApi.request.post("/api/v1/auth/refresh", { data: { refresh_token: adminTokens.refresh_token } })).status()).toBe(200);
+  await adminApi.close();
+});

@@ -123,11 +123,13 @@ Además de la cola, el cliente:
 
 ## 9. Recarga sin conexión y sesión
 
-- **Sesión.** Al iniciar, `restore()` consulta `/auth/me`. Un fallo de red o un 5xx **no** borra
-  tokens ni identidad: se conserva el usuario guardado solo si coincide con el `sub` del token local
-  (`unverified: true`) y se revalida con el servidor al volver la conexión (evento `online`). Solo un
-  rechazo real (401 tras intentar renovar, 403) limpia la sesión. Renovar el token sin red devuelve
-  `NetworkError` y no cierra la sesión.
+- **Sesión.** Al iniciar, si hay una identidad guardada en el dispositivo y coincide con el `sub` del token
+  local, la interfaz arranca **sin esperar a la red** (`unverified: true`) y `revalidate()` la confirma en
+  segundo plano. Una red que no responde ya no deja la pantalla de carga durante 15 s o más. Si el servidor
+  rechaza la sesión (401 tras intentar renovar, 403), se limpia y se vuelve al ingreso. Sin red o con un 5xx
+  se conserva y se vuelve a confirmar al recuperar la conexión (evento `online`). Sin identidad local
+  utilizable, `restore()` sí espera a `/auth/me`. `initialized` termina siempre en `true`, también ante
+  errores inesperados (`finally`). Renovar el token sin red devuelve `NetworkError` y no cierra la sesión.
 - **Sesión expirada en la cola.** Si al sincronizar el servidor rechaza las credenciales, la operación
   vuelve a `LOCAL_PENDING` con el mismo UUID (no pasa a `SYNC_ERROR`) y la interfaz vuelve al ingreso;
   al ingresar de nuevo el mismo usuario, la cola continúa.

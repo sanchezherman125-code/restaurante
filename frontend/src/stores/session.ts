@@ -9,6 +9,7 @@ import {
   getRefreshToken,
   isConnectivityError,
   onSessionExpired,
+  OwnerChangedError,
   setTokens,
   storedTokenSubject,
 } from "../api/client";
@@ -60,33 +61,46 @@ export const useSession = create<SessionState>()(
         set({ user: null, unverified: false });
       },
       restore: async () => {
-        const remembered = get().user;
-        if (!getAccessToken() && !getRefreshToken()) {
-          set({ user: null, initialized: true, unverified: false });
-          return;
-        }
         try {
-          const user = await authApi.me();
-          set({ user, initialized: true, unverified: false });
-        } catch (error) {
-          if (!isConnectivityError(error)) {
-            // Credenciales rechazadas por el servidor: nunca se reutiliza la identidad guardada.
-            clearTokens();
-            set({ user: null, initialized: true, unverified: false });
+          const remembered = get().user;
+          if (!getAccessToken() && !getRefreshToken()) {
+            set({ user: null, unverified: false });
             return;
           }
-          // Sin conexión: se conservan tokens e identidad solo si pertenecen al mismo usuario.
-          const sameUser = remembered !== null && storedTokenSubject() === remembered.id;
-          set({ user: sameUser ? remembered : null, initialized: true, unverified: sameUser });
+          if (remembered !== null && storedTokenSubject() === remembered.id) {
+            // Identidad local de este dispositivo: la interfaz arranca sin esperar a la red (una red que no
+            // responde demoraría el arranque 15 s o más). El servidor la confirma en segundo plano y sigue
+            // autorizando cada operación.
+            set({ user: remembered, unverified: true });
+            void get().revalidate();
+            return;
+          }
+          // Sin identidad local utilizable: solo el servidor puede decir quién es.
+          try {
+            const user = await authApi.me();
+            set({ user, unverified: false });
+          } catch (error) {
+            // Credenciales rechazadas: se limpian. Sin conexión se conservan para intentarlo al reconectar.
+            if (!isConnectivityError(error) && !(error instanceof OwnerChangedError)) clearTokens();
+            set({ user: null, unverified: false });
+          }
+        } catch {
+          // Error inesperado (almacenamiento bloqueado, etc.): ingreso manual, nunca una carga infinita.
+          set({ user: null, unverified: false });
+        } finally {
+          set({ initialized: true });
         }
       },
       revalidate: async () => {
         if (!getAccessToken() && !getRefreshToken()) return;
+        const expected = get().user?.id ?? null;
         try {
           const user = await authApi.me();
-          set({ user, unverified: false });
+          // Solo se aplica si mientras tanto no cambió el usuario del dispositivo.
+          if (expected === null || user.id === expected) set({ user, unverified: false });
         } catch (error) {
-          if (isConnectivityError(error)) return;
+          // Sin conexión, o la sesión ya es de otro usuario: no se toca nada.
+          if (isConnectivityError(error) || error instanceof OwnerChangedError) return;
           clearTokens();
           set({ user: null, unverified: false });
         }

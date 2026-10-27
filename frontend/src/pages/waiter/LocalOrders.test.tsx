@@ -88,8 +88,10 @@ const pendingRecord = {
 
 // El cambio de usuario relee la cola de IndexedDB en segundo plano: se espera antes de preparar el estado.
 async function settleSession() {
+  const changed = useSession.getState().user?.id !== "w1";
   useSession.setState({ user: { id: "w1", username: "ana", display_name: "Ana", role: "WAITER", is_active: true, created_at: "" } });
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  // Espera a que termine esa relectura (no un tiempo fijo): si no, podría terminar después y pisar el estado.
+  if (changed) await vi.waitFor(() => expect(useQueue.getState()).toMatchObject({ loaded: true, ownerId: "w1" }));
 }
 
 describe("mesas con comandas guardadas en el dispositivo", () => {

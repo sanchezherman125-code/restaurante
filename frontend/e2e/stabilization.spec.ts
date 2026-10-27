@@ -437,3 +437,57 @@ test("Codex 4: si B ingresa mientras se guarda la operación de A en IndexedDB, 
   expect((await adminApi.request.post("/api/v1/auth/refresh", { data: { refresh_token: adminTokens.refresh_token } })).status()).toBe(200);
   await adminApi.close();
 });
+
+test("Arranque en frío de la PWA sin red o con la API sin responder: el salón aparece sin esperar al servidor", async ({ browser }) => {
+  const admin = await (await browser.newContext()).newPage();
+  await login(admin, "admin");
+  await ensureShiftOpen(admin);
+  await admin.context().close();
+
+  const context = await browser.newContext();
+  let page = await context.newPage();
+  await login(page, "mesero1");
+  await page.goto("/mesas");
+  await waitForServiceWorker(page);
+  await expect(page.getByRole("button", { name: /^Mesa 1,/ })).toBeVisible();
+  const userId = await page.evaluate(() => JSON.parse(localStorage.getItem("restaurante.session") ?? "{}").state?.user?.id as string);
+  await expect.poll(() => page.evaluate((key) => (localStorage.getItem(key) ?? "").includes("Mesa 1"), `restaurante.queryCache.${userId}`)).toBe(true);
+
+  // Una operación local pendiente que no debe perderse en los arranques siguientes.
+  await page.goto("/gastos");
+  await expect(page.getByRole("heading", { name: "Gastos del turno" })).toBeVisible();
+  await context.setOffline(true);
+  await page.getByLabel("Monto (S/)").fill("0.01");
+  await page.getByLabel("Descripción").fill("Gasto arranque en frío E2E");
+  await page.getByRole("button", { name: "Registrar gasto" }).click();
+  await expect(page.getByTestId("sync-indicator")).toContainText("1 por enviar");
+  await page.close(); // la PWA se cierra
+
+  const coldStart = async () => {
+    page = await context.newPage();
+    const started = Date.now();
+    await page.goto("/mesas");
+    // Sin la pantalla de carga infinita: el salón local aparece en pocos segundos, sin esperar a /auth/me.
+    await expect(page.getByRole("button", { name: /^Mesa 1,/ })).toBeVisible({ timeout: 5_000 });
+    await expect(page.getByTestId("sync-indicator")).toContainText("1 por enviar");
+    await expect(page).toHaveURL(/\/mesas$/);
+    return Date.now() - started;
+  };
+
+  // 1. Sin red (el navegador lo sabe: las peticiones fallan al instante).
+  await coldStart();
+  await page.close();
+
+  // 2. Red "conectada" que no responde (Wi-Fi sin Internet): las peticiones a la API quedan colgadas.
+  await context.setOffline(false);
+  await context.route("**/api/**", () => { /* nunca responde */ });
+  const elapsed = await coldStart();
+  expect(elapsed).toBeLessThan(5_000);
+
+  // Al volver la API se revalida la sesión y la operación se sincroniza una vez.
+  await context.unroute("**/api/**");
+  await page.reload();
+  await expect(page.getByTestId("sync-indicator")).toContainText("sincronizado", { timeout: 30_000 });
+  await expect(page.getByRole("button", { name: /^Mesa 1,/ })).toBeVisible();
+  await context.close();
+});

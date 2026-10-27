@@ -375,3 +375,42 @@ Pendiente: la validación de la PWA instalada en dispositivos físicos con red i
 | Muestreo durante Playwright | `/health` ≤ 40 ms con el servidor activo, sin timeouts reales; ninguna transacción ociosa ≥ 1 s; 0 conexiones al terminar |
 
 Pendiente: la validación de la PWA instalada en dispositivos físicos con red intermitente real.
+
+---
+
+# Arranque de la PWA detenido en la pantalla de carga (rama `fix/pwa-arranque-offline`)
+
+- **Síntoma.** La PWA queda en el indicador de carga inicial (`AppRouter` con `initialized === false`)
+  antes de mostrar el salón.
+- **Causa.** `restore()` esperaba la respuesta de `/auth/me` antes de terminar la inicialización. Sin red
+  la petición falla al instante, pero con una red que no responde (Wi-Fi sin Internet, mala señal) tarda
+  hasta el timeout de 15 s, y 30 s si además intenta renovar el token. Medido con la API colgada: el
+  salón aparecía a los **15,3 s**. Además, un error inesperado dentro de `restore()` (por ejemplo,
+  almacenamiento bloqueado) dejaba `initialized` en `false` **para siempre**.
+- **Solución.** Si la identidad guardada coincide con el dueño del token local, la interfaz arranca de
+  inmediato como `unverified` y `revalidate()` confirma la sesión en segundo plano (y de nuevo con el
+  evento `online`). Si el servidor rechaza la sesión, se limpia y se vuelve al ingreso. El servidor sigue
+  autorizando cada operación y la cola no envía sin un token válido del dueño. Sin identidad local
+  utilizable se espera al servidor como antes. `initialized` termina siempre en `true` (`finally`). Una
+  confirmación no toca la sesión si otro usuario ingresó mientras tanto. No se borra IndexedDB ni la copia
+  local de consultas.
+- **Pruebas.**
+  - `session.test.ts`: arranque con `/auth/me` colgado, confirmación en segundo plano, rechazo, sin
+    identidad local, error inesperado, cambio de usuario durante la confirmación. Con `main` fallan 4.
+  - E2E «Arranque en frío»: la PWA se cierra y se reabre, sin una página abierta antes del corte. Sin red
+    y con la API sin responder, el salón aparece en menos de 5 s, la operación pendiente sigue en la cola
+    y, al volver la API, se sincroniza. Con `main` falla en el caso de la API sin responder (captura: la
+    misma pantalla de carga).
+  - `LocalOrders.test.tsx`: se sustituyó una espera fija de 50 ms por la condición real (cola leída para
+    el usuario). Fallaba de forma intermitente bajo carga.
+
+| Verificación | Resultado |
+|---|---|
+| Ruff, Alembic check, TypeScript, ESLint | sin errores |
+| Pytest (PostgreSQL real) | 233 aprobadas |
+| Vitest | 166 aprobadas (3 ejecuciones seguidas) |
+| Playwright completo (incluye build PWA) | 30 aprobadas, 1 omitida (capturas opcionales) |
+| Muestreo durante Playwright | `/health` ≤ 107 ms, sin timeouts reales; ninguna transacción ociosa ≥ 1 s; 0 conexiones al terminar |
+
+Pendiente: validar en Android con la PWA instalada (arranque sin red, Wi-Fi sin Internet y red
+intermitente). En este entorno no hay dispositivo físico.

@@ -8,7 +8,8 @@ import type { BoardTask, ItemGroup } from "../types/api";
 import { BoardPage } from "./BoardPage";
 
 const mocks = vi.hoisted(() => ({
-  groups: [] as unknown[],
+  groups: [] as unknown[] | undefined,
+  query: {} as Record<string, unknown>,
   sendOrQueue: vi.fn(),
   setTaskStatus: vi.fn(),
   kitchen: vi.fn(),
@@ -21,6 +22,7 @@ vi.mock("@tanstack/react-query", () => ({
     data: queryKey[0] === "preparation" ? mocks.groups : { items: [], categories: [] },
     isLoading: false,
     refetch: vi.fn(),
+    ...(queryKey[0] === "preparation" ? mocks.query : {}),
   }),
   useQueryClient: () => ({ invalidateQueries: vi.fn() }),
 }));
@@ -200,5 +202,45 @@ describe("tablero de preparación por tareas", () => {
     }] }));
     expect(screen.getByTestId("cancel-queued")).toHaveTextContent("Cancelación pendiente de envío");
     expect(screen.queryByRole("button", { name: "Cancelar plato" })).toBeNull();
+  });
+});
+
+describe("tablero sin respuesta del servidor", () => {
+  beforeEach(() => {
+    setRole("KITCHEN");
+    mocks.query = {};
+  });
+
+  it("una consulta fallida sin copia local nunca se muestra como «no hay comandas»", () => {
+    mocks.groups = undefined;
+    mocks.query = { isError: true, dataUpdatedAt: 0 };
+    render(<BoardPage />);
+    expect(screen.queryByText("No hay comandas pendientes")).toBeNull();
+    expect(screen.queryByText(/0 pendientes/)).toBeNull();
+    expect(screen.getByText("No se pudieron cargar las comandas")).toBeVisible();
+    expect(screen.getByRole("button", { name: /Reintentar/ })).toBeVisible();
+  });
+
+  it("sin conexión (consulta en pausa) tampoco afirma que no hay comandas", () => {
+    mocks.groups = undefined;
+    mocks.query = { isPaused: true, dataUpdatedAt: 0 };
+    render(<BoardPage />);
+    expect(screen.queryByText("No hay comandas pendientes")).toBeNull();
+    expect(screen.getByText("No se pudieron cargar las comandas")).toBeVisible();
+  });
+
+  it("con copia local la muestra marcada como no actualizada, con su hora", () => {
+    mocks.groups = [group([task({})])];
+    mocks.query = { isError: true, dataUpdatedAt: new Date(2026, 9, 27, 13, 5).getTime() };
+    render(<BoardPage />);
+    expect(screen.getByTestId("prep-card")).toBeVisible();
+    expect(screen.getByTestId("stale-notice")).toHaveTextContent(/pueden no estar al día.*01:05/);
+  });
+
+  it("con datos confirmados no muestra avisos de conexión", () => {
+    mocks.groups = [];
+    render(<BoardPage />);
+    expect(screen.getByText("No hay comandas pendientes")).toBeVisible();
+    expect(screen.queryByTestId("stale-notice")).toBeNull();
   });
 });

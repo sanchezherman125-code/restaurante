@@ -1,13 +1,31 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, NetworkError, OwnerChangedError, getAccessToken, setTokens } from "../api/client";
 import { fakeJwt } from "../test/jwt";
 import type { User } from "../types/api";
 import { useSession } from "./session";
 
-const mocks = vi.hoisted(() => ({ me: vi.fn() }));
-vi.mock("../api/endpoints", () => ({ authApi: { me: mocks.me, login: vi.fn(), logout: vi.fn() } }));
+const mocks = vi.hoisted(() => ({ me: vi.fn(), login: vi.fn(), logout: vi.fn() }));
+vi.mock("../api/endpoints", () => ({ authApi: { me: mocks.me, login: mocks.login, logout: mocks.logout } }));
 
 const ana: User = { id: "w1", username: "ana", display_name: "Ana", role: "WAITER", is_active: true, created_at: "" };
+const luis: User = { id: "w2", username: "luis", display_name: "Luis", role: "WAITER", is_active: true, created_at: "" };
+
+/** Respuesta de /auth/me que llega cuando la prueba lo decide. */
+function deferredMe() {
+  let resolve: (user: User) => void = () => undefined;
+  let reject: (error: unknown) => void = () => undefined;
+  mocks.me.mockReturnValueOnce(new Promise<User>((ok, fail) => { resolve = ok; reject = fail; }));
+  return { resolve, reject };
+}
+
+/** Ingreso real de Luis por el store: tokens nuevos y su /auth/me. */
+async function loginLuis() {
+  mocks.login.mockResolvedValueOnce({ access_token: fakeJwt("w2"), refresh_token: "refresh-luis" });
+  mocks.me.mockResolvedValueOnce(luis);
+  await useSession.getState().login("luis", "1234");
+}
+
+const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe("restauración de sesión sin conexión", () => {
   beforeEach(() => {
@@ -116,6 +134,126 @@ describe("restauración de sesión sin conexión", () => {
     mocks.me.mockRejectedValue(new ApiError(403, "USER_INACTIVE", "Usuario inactivo"));
     await useSession.getState().revalidate();
     expect(useSession.getState().user).toBeNull();
+    expect(getAccessToken()).toBeNull();
+  });
+});
+
+describe("respuestas tardías de una sesión anterior", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    mocks.me.mockReset();
+    mocks.login.mockReset();
+    mocks.logout.mockReset();
+    setTokens(fakeJwt("w1"), "refresh-ana");
+    useSession.setState({ user: ana, initialized: true, unverified: true });
+  });
+
+  it("la confirmación tardía de Ana no reemplaza a Luis, que ingresó mientras tanto", async () => {
+    const late = deferredMe();
+    const revalidation = useSession.getState().revalidate();
+    await loginLuis();
+    late.resolve(ana);
+    await revalidation;
+    expect(useSession.getState().user).toEqual(luis);
+    expect(useSession.getState().unverified).toBe(false);
+  });
+
+  it("el rechazo tardío de la sesión de Ana no borra las credenciales de Luis", async () => {
+    const late = deferredMe();
+    const revalidation = useSession.getState().revalidate();
+    await loginLuis();
+    late.reject(new ApiError(403, "USER_INACTIVE", "Usuario inactivo"));
+    await revalidation;
+    expect(useSession.getState().user).toEqual(luis);
+    expect(getAccessToken()).toBe(fakeJwt("w2"));
+  });
+
+  it("una confirmación tardía no revierte el cierre de sesión", async () => {
+    const late = deferredMe();
+    const revalidation = useSession.getState().revalidate();
+    await useSession.getState().logout();
+    late.resolve(ana);
+    await revalidation;
+    expect(useSession.getState().user).toBeNull();
+    expect(getAccessToken()).toBeNull();
+  });
+
+  it("si la sesión cambió de dueño durante la confirmación, la respuesta no se aplica", async () => {
+    useSession.setState({ user: null, unverified: false });
+    const late = deferredMe();
+    const revalidation = useSession.getState().revalidate();
+    setTokens(fakeJwt("w2"), "refresh-luis");
+    late.resolve(ana);
+    await revalidation;
+    expect(useSession.getState().user).toBeNull();
+    expect(getAccessToken()).toBe(fakeJwt("w2"));
+  });
+
+  it("la restauración que espera al servidor no pisa a quien ingresó mientras tanto", async () => {
+    useSession.setState({ user: null, initialized: false, unverified: false });
+    const late = deferredMe();
+    const restoring = useSession.getState().restore();
+    await loginLuis();
+    late.reject(new ApiError(401, "SESSION_EXPIRED", "La sesión expiró."));
+    await restoring;
+    expect(useSession.getState().user).toEqual(luis);
+    expect(getAccessToken()).toBe(fakeJwt("w2"));
+  });
+});
+
+describe("cierre de sesión sin servidor", () => {
+  const fetchMock = vi.fn();
+
+  beforeEach(() => {
+    localStorage.clear();
+    mocks.logout.mockReset();
+    fetchMock.mockReset();
+    vi.stubGlobal("fetch", fetchMock);
+    setTokens(fakeJwt("w1"), "refresh-ana");
+    useSession.setState({ user: ana, initialized: true, unverified: false });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("sale de inmediato aunque el servidor no responda", async () => {
+    fetchMock.mockReturnValue(new Promise(() => undefined));
+    mocks.logout.mockReturnValue(new Promise(() => undefined));
+    const outcome = await Promise.race([
+      useSession.getState().logout().then(() => "salió"),
+      new Promise((resolve) => setTimeout(() => resolve("esperando al servidor"), 300)),
+    ]);
+    expect(outcome).toBe("salió");
+    expect(useSession.getState().user).toBeNull();
+    expect(getAccessToken()).toBeNull();
+  });
+
+  it("revoca en el servidor con las credenciales de quien salió, aunque otro usuario ya haya ingresado", async () => {
+    let answer: (response: Response) => void = () => undefined;
+    fetchMock.mockReturnValueOnce(new Promise<Response>((resolve) => { answer = resolve; }));
+    await useSession.getState().logout();
+    await loginLuis();
+    answer(new Response(null, { status: 204 }));
+    await settle();
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toMatch(/\/auth\/logout$/);
+    expect((init.headers as Record<string, string>).Authorization).toBe(`Bearer ${fakeJwt("w1")}`);
+    expect(useSession.getState().user).toEqual(luis);
+    expect(getAccessToken()).toBe(fakeJwt("w2"));
+  });
+
+  it("con el acceso vencido renueva solo para revocar, sin guardar credenciales", async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response(null, { status: 401 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "nuevo", refresh_token: "nuevo-refresh" }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    await useSession.getState().logout();
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    const [, refreshInit] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(JSON.parse(refreshInit.body as string)).toEqual({ refresh_token: "refresh-ana" });
+    const [, retryInit] = fetchMock.mock.calls[2] as [string, RequestInit];
+    expect((retryInit.headers as Record<string, string>).Authorization).toBe("Bearer nuevo");
     expect(getAccessToken()).toBeNull();
   });
 });

@@ -6,9 +6,11 @@ import { NetworkError } from "../api/client";
 import { useSession } from "../stores/session";
 import { BillingPage } from "./BillingPage";
 
-const mocks = vi.hoisted(() => ({ payment: vi.fn(), data: {} as Record<string, unknown>, createSplit: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  payment: vi.fn(), data: {} as Record<string, unknown> | undefined, createSplit: vi.fn(), query: {} as Record<string, unknown>,
+}));
 vi.mock("@tanstack/react-query", () => ({
-  useQuery: () => ({ data: mocks.data }),
+  useQuery: () => ({ data: mocks.data, refetch: vi.fn(), ...mocks.query }),
   useQueryClient: () => ({ invalidateQueries: vi.fn() }),
 }));
 vi.mock("../api/endpoints", () => ({ billingApi: { get: vi.fn(), createPayment: mocks.payment, createSplit: mocks.createSplit } }));
@@ -133,5 +135,50 @@ describe("cobro simplificado sin división de cuentas", () => {
     expect(screen.getByText("Pedido cancelado")).toBeVisible();
     expect(screen.queryByText("Pedido pagado")).toBeNull();
     expect(screen.queryByRole("button", { name: /^Cobrar/ })).toBeNull();
+  });
+});
+
+describe("cuenta sin respuesta del servidor", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    mocks.payment.mockReset();
+    useSession.setState({ user: null });
+    mocks.data = { table_name: "Mesa 3", status: "DELIVERED", total: "40.00", paid_amount: "0.00",
+      pending_amount: "40.00", items: [{ order_item_id: "i1", name: "Lomo saltado", quantity: 1, unit_price: "40.00", total: "40.00", status: "DELIVERED" }],
+      payments: [] };
+    mocks.query = {};
+  });
+
+  it("si la actualización falla conserva la cuenta visible, avisa y bloquea el cobro", async () => {
+    mocks.query = { isError: true, dataUpdatedAt: new Date(2026, 9, 27, 20, 40).getTime() };
+    const user = userEvent.setup();
+    page();
+    expect(screen.getByText("Lomo saltado")).toBeVisible();
+    expect(screen.getByTestId("stale-notice")).toHaveTextContent(/no se pueden registrar cobros nuevos.*08:40/);
+    const charge = screen.getByRole("button", { name: "Cobro bloqueado sin conexión" });
+    expect(charge).toBeDisabled();
+    await user.click(charge);
+    expect(mocks.payment).not.toHaveBeenCalled();
+  });
+
+  it("sin conexión (consulta en pausa) también bloquea el cobro", () => {
+    mocks.query = { isPaused: true, dataUpdatedAt: Date.now() };
+    page();
+    expect(screen.getByText("Lomo saltado")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Cobro bloqueado sin conexión" })).toBeDisabled();
+  });
+
+  it("sin cuenta guardada explica que no se pudo cargar", () => {
+    mocks.data = undefined;
+    mocks.query = { isError: true };
+    page();
+    expect(screen.getByText("No se pudo cargar la cuenta")).toBeVisible();
+    expect(screen.queryByRole("button", { name: /^Cobrar/ })).toBeNull();
+  });
+
+  it("al volver la conexión el cobro se habilita", () => {
+    page();
+    expect(screen.queryByTestId("stale-notice")).toBeNull();
+    expect(screen.getByRole("button", { name: "Cobrar S/ 40.00" })).toBeEnabled();
   });
 });

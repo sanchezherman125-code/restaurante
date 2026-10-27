@@ -3,9 +3,10 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { menuApi, ordersApi, preparationApi } from "../api/endpoints";
 import { Icon } from "../components/Icon";
 import { ConfirmDialog, Modal } from "../components/Modal";
-import { EmptyState, PageHeader, SkeletonList } from "../components/Layout";
+import { EmptyState, PageHeader, SkeletonList, StaleNotice, UnavailableState } from "../components/Layout";
 import { formatElapsed, useElapsed, useNow } from "../hooks/useElapsed";
 import { AREA_NAME, TASK_STATUS } from "../lib/labels";
+import { freshness } from "../lib/freshness";
 import { errorMessage, sendOrQueue } from "../lib/send";
 import type { BoardTask, ItemGroup, MenuItem } from "../types/api";
 import { useQueue } from "../stores/queue";
@@ -232,19 +233,22 @@ function Board({ area }: { area: string }) {
     };
   }, [groups.data]);
 
-  if (groups.isLoading) return <div className="board"><PageHeader title={`${AREA_LABEL[area]} · comandas`} /><SkeletonList rows={3} height={180} label="Cargando comandas" /></div>;
+  const state = freshness(groups);
+  if (state === "loading") return <div className="board"><PageHeader title={`${AREA_LABEL[area]} · comandas`} /><SkeletonList rows={3} height={180} label="Cargando comandas" /></div>;
 
   return (
     <div className="board">
       <PageHeader
         title={`${AREA_LABEL[area]} · comandas`}
-        subtitle={
+        subtitle={state === "unavailable" ? (
+          <span className="board-totals" role="status"><span className="chip warning"><Icon name="wifiOff" />Sin datos del servidor</span></span>
+        ) : (
           <span className="board-totals" role="status">
             <span className="chip warning"><Icon name="hourglass" />{totals.pending} {totals.pending === 1 ? "pendiente" : "pendientes"}</span>
             <span className="chip info"><Icon name="flame" />{totals.preparing} preparando</span>
             <span className="chip success"><Icon name="check" />{totals.ready} {totals.ready === 1 ? "lista" : "listas"}</span>
           </span>
-        }
+        )}
         actions={
           <>
             <button className="btn ghost small" onClick={() => setSoldOutOpen(true)}><Icon name="ban" />Agotados</button>
@@ -253,7 +257,13 @@ function Board({ area }: { area: string }) {
         }
       />
 
-      {data.length === 0 ? (
+      {state === "stale" ? <StaleNotice updatedAt={groups.dataUpdatedAt} message="Sin conexión con el servidor: las comandas pueden no estar al día." onRetry={() => void groups.refetch()} /> : null}
+
+      {state === "unavailable" ? (
+        <UnavailableState title="No se pudieron cargar las comandas"
+          hint="Sin conexión con el servidor: puede haber comandas que todavía no se ven aquí. Se reintenta solo."
+          onRetry={() => void groups.refetch()} />
+      ) : data.length === 0 ? (
         <EmptyState icon="check" title="No hay comandas pendientes" hint="Las nuevas comandas aparecerán solas, con aviso." />
       ) : (
         <div className="board-grid">

@@ -50,6 +50,18 @@ export async function disablePushNotifications(): Promise<void> {
   } catch { /* backend logout also revokes subscriptions for this device */ }
 }
 
+/**
+ * Al cerrar sesión: anula la suscripción de este navegador sin llamar al servidor (el cierre de sesión ya
+ * borra las del dispositivo). ``stillCurrent`` evita anular la de quien haya ingresado después.
+ */
+export async function forgetPushSubscription(stillCurrent: () => boolean): Promise<void> {
+  if (!supportsWebPush()) return;
+  try {
+    const subscription = await (await navigator.serviceWorker.ready).pushManager.getSubscription();
+    if (subscription && stillCurrent()) await subscription.unsubscribe();
+  } catch { /* sin suscripción que anular */ }
+}
+
 export async function hasPushSubscription(): Promise<boolean> {
   if (!supportsWebPush() || Notification.permission !== "granted") return false;
   try { return Boolean(await (await navigator.serviceWorker.ready).pushManager.getSubscription()); }

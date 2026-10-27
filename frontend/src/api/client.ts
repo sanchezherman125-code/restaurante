@@ -114,6 +114,33 @@ export async function refreshSession(): Promise<RefreshOutcome> {
   return refreshPromise;
 }
 
+/**
+ * Revoca en el servidor la sesión de estas credenciales sin leer ni modificar las guardadas: la salida local
+ * ya ocurrió y el dispositivo puede tener a otro usuario. Si el acceso venció, renueva solo para revocar.
+ * Sin conexión no hay reintento: el servidor vence la sesión por sí mismo.
+ */
+export async function revokeSession(access: string | null, refresh: string | null): Promise<void> {
+  const logout = (token: string) => fetch(`${API_BASE}/api/v1/auth/logout`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Device-Id": getDeviceId(), Authorization: `Bearer ${token}` },
+    signal: AbortSignal.timeout(15000),
+  });
+  try {
+    if (access && (await logout(access)).status !== 401) return;
+    if (!refresh) return;
+    const renewed = await fetch(`${API_BASE}/api/v1/auth/refresh`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(15000),
+      body: JSON.stringify({ refresh_token: refresh }),
+    });
+    if (!renewed.ok) return;
+    await logout(((await renewed.json()) as { access_token: string }).access_token);
+  } catch {
+    // sin conexión: la salida local ya ocurrió
+  }
+}
+
 export async function tryRefresh(): Promise<boolean> {
   return (await refreshSession()) === "refreshed";
 }
@@ -213,6 +240,8 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}, 
       if (owner !== undefined) throw new OwnerChangedError();
       throw new ApiError(401, "SESSION_EXPIRED", "La sesión cambió. Vuelva a intentarlo.");
     }
+    // Si mientras se renovaba ingresó otro usuario, sus credenciales no se borran.
+    ensureOwner(owner);
     expireSession();
     throw new ApiError(401, "SESSION_EXPIRED", "La sesión expiró. Inicie sesión nuevamente.");
   }

@@ -3,10 +3,11 @@ import { useNavigate, useParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { billingApi } from "../api/endpoints";
 import { Icon } from "../components/Icon";
-import { EmptyState, PageHeader, SkeletonList, StatusBadge } from "../components/Layout";
+import { PageHeader, SkeletonList, StaleNotice, StatusBadge, UnavailableState } from "../components/Layout";
 import { ORDER_STATUS } from "../lib/labels";
 import { money } from "../hooks/useElapsed";
 import { ApiError, NetworkError } from "../api/client";
+import { freshness } from "../lib/freshness";
 import { errorMessage } from "../lib/send";
 import { useUi } from "../stores/ui";
 import { useSession } from "../stores/session";
@@ -42,6 +43,10 @@ export function BillingPage() {
 
   const data = billing.data;
   const pending = useMemo(() => (data ? Number(data.total) - Number(data.paid_amount) : 0), [data]);
+
+  // Una cuenta que el servidor no confirmó se sigue mostrando, pero no se cobra un saldo que puede haber cambiado.
+  const state = freshness(billing);
+  const offline = state === "stale";
 
   async function registerPayment() {
     if (!data) return;
@@ -86,12 +91,13 @@ export function BillingPage() {
     }
   }
 
-  if (billing.isLoading) return <div className="page narrow"><PageHeader title="Cobro" /><SkeletonList rows={3} height={90} label="Cargando cuenta" /></div>;
-  if (billing.isError || !data) {
+  if (state === "loading") return <div className="page narrow"><PageHeader title="Cobro" /><SkeletonList rows={3} height={90} label="Cargando cuenta" /></div>;
+  if (!data) {
     return (
       <div className="page narrow">
-        <EmptyState icon="wifiOff" title="No se pudo cargar la cuenta" hint="Verifique la conexión e intente de nuevo."
-          action={<button className="btn secondary" onClick={() => navigate(-1)}><Icon name="arrowLeft" />Volver</button>} />
+        <UnavailableState title="No se pudo cargar la cuenta" hint="Verifique la conexión e intente de nuevo."
+          onRetry={() => void billing.refetch()} />
+        <button className="btn ghost" onClick={() => navigate(-1)}><Icon name="arrowLeft" />Volver</button>
       </div>
     );
   }
@@ -107,6 +113,11 @@ export function BillingPage() {
         subtitle={orderStatus ? <StatusBadge label={orderStatus.label} tone={orderStatus.tone} icon={orderStatus.icon} /> : data.status}
         actions={<button className="btn ghost" onClick={() => navigate(-1)}><Icon name="arrowLeft" />Volver</button>}
       />
+
+      {offline ? (
+        <StaleNotice message="Sin conexión con el servidor: la cuenta puede no estar al día y no se pueden registrar cobros nuevos hasta que responda."
+          updatedAt={billing.dataUpdatedAt} onRetry={() => void billing.refetch()} />
+      ) : null}
 
       {uncertainPayment ? (
         <div className="offline-banner" role="alert">
@@ -173,8 +184,8 @@ export function BillingPage() {
                   </button>
                 ))}
               </div>
-              <button className="btn block large success" onClick={() => void registerPayment()} disabled={busy}>
-                {busy ? "Registrando…" : `Cobrar ${money(pending)}`}
+              <button className="btn block large success" onClick={() => void registerPayment()} disabled={busy || offline}>
+                {busy ? "Registrando…" : offline ? "Cobro bloqueado sin conexión" : `Cobrar ${money(pending)}`}
               </button>
               <p className="hint" style={{ margin: "var(--s3) 0 0" }}>El cobro requiere conexión. El pedido queda pagado al cubrir el total.</p>
             </section>

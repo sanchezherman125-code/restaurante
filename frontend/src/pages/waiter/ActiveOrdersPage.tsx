@@ -6,8 +6,9 @@ import { Icon } from "../../components/Icon";
 import { ConfirmDialog } from "../../components/Modal";
 import { errorMessage } from "../../lib/send";
 import { useUi } from "../../stores/ui";
-import { EmptyState, PageHeader, SkeletonList, StatusBadge } from "../../components/Layout";
+import { EmptyState, PageHeader, SkeletonList, StaleNotice, StatusBadge, UnavailableState } from "../../components/Layout";
 import { formatElapsed, money, useElapsed } from "../../hooks/useElapsed";
+import { freshness } from "../../lib/freshness";
 import { ORDER_STATUS } from "../../lib/labels";
 import { usePendingOrders } from "../../stores/pendingOrders";
 import type { Order } from "../../types/api";
@@ -128,16 +129,19 @@ export function ActiveOrdersPage() {
     : filter === "PREPARING" ? counts(order).preparing + counts(order).pending > 0
     : Number(order.total) - Number(order.paid_amount) > 0.001);
 
-  if (orders.isLoading) return <div className="page"><PageHeader title="Pedidos activos" /><SkeletonList rows={4} height={140} label="Cargando pedidos" /></div>;
+  const state = freshness(orders);
+  if (state === "loading") return <div className="page"><PageHeader title="Pedidos activos" /><SkeletonList rows={4} height={140} label="Cargando pedidos" /></div>;
+  const unavailable = state === "unavailable";
 
   return (
     <div className="page">
-      <PageHeader title="Pedidos activos" subtitle={`${orders.data?.length ?? 0} ${(orders.data?.length ?? 0) === 1 ? "abierto" : "abiertos"}`} />
+      <PageHeader title="Pedidos activos" subtitle={unavailable ? "Sin datos del servidor"
+        : `${sorted.length} ${sorted.length === 1 ? "abierto" : "abiertos"}`} />
 
       <div className="segmented" role="group" aria-label="Filtrar pedidos">
         {([["ALL", "Todos", sorted.length], ["READY", "Para entregar", tally.ready], ["PREPARING", "En preparación", tally.preparing], ["UNPAID", "Por cobrar", tally.unpaid]] as const).map(([key, label, count]) => (
           <button key={key} className={filter === key ? "active" : ""} aria-pressed={filter === key} onClick={() => setFilter(key)}>
-            {label}<span className="count">{count}</span>
+            {label}<span className="count">{unavailable ? "—" : count}</span>
           </button>
         ))}
       </div>
@@ -154,7 +158,13 @@ export function ActiveOrdersPage() {
         </article>
       ))}
 
-      {visible.length === 0 && pending.length === 0 ? (
+      {state === "stale" ? <StaleNotice updatedAt={orders.dataUpdatedAt} message="Sin conexión con el servidor: los pedidos pueden no estar al día." onRetry={() => void orders.refetch()} /> : null}
+
+      {unavailable ? (
+        <UnavailableState title="No se pudieron cargar los pedidos"
+          hint="Sin conexión con el servidor: puede haber pedidos abiertos que todavía no se ven aquí. Se reintenta solo."
+          onRetry={() => void orders.refetch()} />
+      ) : visible.length === 0 && pending.length === 0 ? (
         <EmptyState icon="receipt" title={filter === "ALL" ? "No hay pedidos activos" : "Nada en esta vista"}
           hint={filter === "ALL" ? "Abra una mesa desde el salón." : "Cambie el filtro para ver los demás pedidos."} />
       ) : (

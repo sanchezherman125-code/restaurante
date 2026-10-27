@@ -414,3 +414,67 @@ Pendiente: la validación de la PWA instalada en dispositivos físicos con red i
 
 Pendiente: validar en Android con la PWA instalada (arranque sin red, Wi-Fi sin Internet y red
 intermitente). En este entorno no hay dispositivo físico.
+
+# Auditoría técnica del 2026-10-27 (sobre `eee00b8`), rama `fix/auditoria-sesion-estados`
+
+## P0: una respuesta tardía de `/auth/me` podía imponer la identidad de otra sesión
+
+- **Causa.** `revalidate()` solo comparaba al usuario devuelto con el que inició la consulta, no con el que
+  está activo ahora. Si Ana empezaba una confirmación lenta e ingresaba Luis, la respuesta de Ana
+  reemplazaba a Luis. Un rechazo tardío (403, por ejemplo) borraba las credenciales de Luis, y una
+  confirmación que llegaba después de cerrar sesión devolvía a Ana a la interfaz sin tokens. La
+  restauración que espera al servidor tenía el mismo defecto.
+- **Corrección.** `session.ts` lleva una *generación de sesión*, que avanza con cada ingreso, salida o
+  expiración. Una confirmación o un rechazo solo se aplican si la generación, el usuario activo y el dueño
+  del token guardado siguen siendo los mismos que al empezar. `apiRequest` vuelve a comprobar al dueño
+  antes de borrar credenciales tras una renovación rechazada.
+- **Pruebas.** Cinco en `session.test.ts`: confirmación tardía con otro usuario, rechazo tardío con otro
+  usuario, confirmación tardía después de cerrar sesión, cambio del dueño del token y restauración pisada
+  por un ingreso. Con `eee00b8` fallan las cinco.
+
+## P1: falla de red mostrada como ausencia de datos (cocina, pedidos, panel)
+
+- **Causa.** Con la consulta fallida o en pausa por falta de red, y sin copia local, `data` llega
+  `undefined` y las pantallas lo trataban como una lista vacía: «No hay comandas pendientes», «No hay
+  pedidos activos», importes en `S/ 0.00` y «No hay un turno abierto».
+- **Corrección.** `lib/freshness.ts` distingue `loading`, `confirmed`, `stale` (hay copia, pero la consulta
+  falló o está en pausa) y `unavailable` (no hay copia). Sin datos, las pantallas muestran
+  «No se pudieron cargar…» y un botón Reintentar. Con una copia local, la muestran con un aviso y la hora
+  de la última actualización. En el panel, cada cifra sin datos aparece como «—» y el turno como
+  «Turno sin confirmar».
+- **Pruebas.** `BoardPage.test.tsx`, `ActiveOrdersPage.test.tsx` y `DashboardPage.test.tsx`: falla sin
+  copia, pausa sin red, copia con su hora y datos confirmados sin aviso. Con `eee00b8` fallan 8.
+
+## P1: la pantalla de cobro ocultaba una cuenta válida
+
+- **Causa.** `billing.isError || !data` ocultaba la cuenta aunque React Query conservara la última copia.
+- **Corrección.** La cuenta guardada sigue visible, con aviso y hora. El botón «Cobrar» queda bloqueado
+  («Cobro bloqueado sin conexión») hasta que el servidor responda. «Verificar pago pendiente» sigue
+  activo, porque reenvía la misma operación idempotente y no crea un cobro nuevo.
+- **Pruebas.** `BillingPage.test.tsx`: error con copia, pausa sin red, sin copia y reconexión. Con
+  `eee00b8` fallan 2 (los otros dos ya se cumplían).
+
+## P2: cierre de sesión lento sin conexión
+
+- **Causa.** `logout()` esperaba hasta 2,5 s por las notificaciones push y después hasta 15 s por
+  `/auth/logout` antes de limpiar la sesión local.
+- **Corrección.** La salida local es inmediata, y sigue bloqueada si quedan operaciones sin enviar. La
+  revocación en el servidor (`revokeSession`) continúa en segundo plano con las credenciales de quien
+  sale, sin leer ni modificar las guardadas: si otro usuario ingresa mientras tanto, no lo afecta. Si el
+  acceso venció, renueva solo para revocar y no guarda los tokens nuevos. La suscripción push del
+  navegador se anula localmente; el `/auth/logout` del servidor ya borra las del dispositivo.
+- **Pruebas.** `session.test.ts`: salida con el servidor colgado, revocación con las credenciales de quien
+  salió aunque ya haya ingresado otro usuario, y renovación solo para revocar. Con `eee00b8` fallan las tres.
+
+## Resultados de esta ronda
+
+| Verificación | Resultado |
+|---|---|
+| TypeScript, ESLint, build PWA | sin errores |
+| Pytest (PostgreSQL real) | 233 aprobadas (sin cambios de backend) |
+| Vitest | 189 aprobadas (23 nuevas; 18 fallan con `eee00b8`) |
+| Playwright completo (incluye build PWA) | 30 aprobadas, 1 omitida (capturas opcionales) |
+
+Pendiente: prueba física en Android con la PWA instalada (cambio de usuario con red lenta, cierre de sesión
+sin red, cocina y cobro sin conexión) y confirmar el despliegue en Render. En este entorno no hay
+dispositivo físico.

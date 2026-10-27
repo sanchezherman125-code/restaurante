@@ -10,12 +10,13 @@ import {
   isConnectivityError,
   onSessionExpired,
   OwnerChangedError,
+  revokeSession,
   setTokens,
   storedTokenSubject,
 } from "../api/client";
 import { listOperations } from "../offline/queue-db";
 import { useUi } from "./ui";
-import { disablePushNotifications } from "../notifications/push";
+import { forgetPushSubscription } from "../notifications/push";
 
 interface SessionState {
   user: User | null;
@@ -29,6 +30,16 @@ interface SessionState {
   hasRole: (...roles: Role[]) => boolean;
 }
 
+/**
+ * Generación de la sesión local: avanza con cada ingreso, salida o expiración. Una respuesta del servidor
+ * pedida en una generación anterior pertenece a otra sesión y no se aplica, ni para confirmarla ni para cerrarla.
+ */
+let generation = 0;
+
+function nextSession(): number {
+  return ++generation;
+}
+
 export const useSession = create<SessionState>()(
   persist(
     (set, get) => ({
@@ -36,9 +47,11 @@ export const useSession = create<SessionState>()(
       initialized: false,
       unverified: false,
       login: async (username, pin) => {
+        nextSession();
         const tokens = await authApi.login(username, pin, getDeviceId());
         setTokens(tokens.access_token, tokens.refresh_token);
         const user = await authApi.me();
+        nextSession();
         set({ user, initialized: true, unverified: false });
         return user;
       },
@@ -50,17 +63,19 @@ export const useSession = create<SessionState>()(
           useUi.getState().setLogoutBlocked(true);
           return;
         }
-        // Sin service worker activo, "ready" nunca resuelve: no debe bloquear el cierre de sesión.
-        await Promise.race([disablePushNotifications(), new Promise<void>((resolve) => setTimeout(resolve, 2500))]);
-        try {
-          await authApi.logout();
-        } catch {
-          // la sesión local se limpia igualmente
-        }
+        // La salida local no espera a la red (un dispositivo compartido debe quedar libre al instante); la
+        // revocación en el servidor sigue en segundo plano con las credenciales de quien sale.
+        const access = getAccessToken();
+        const refresh = getRefreshToken();
+        const session = nextSession();
         clearTokens();
         set({ user: null, unverified: false });
+        void revokeSession(access, refresh);
+        // Sin service worker activo, "ready" nunca resuelve: por eso tampoco se espera.
+        void forgetPushSubscription(() => generation === session);
       },
       restore: async () => {
+        const session = generation;
         try {
           const remembered = get().user;
           if (!getAccessToken() && !getRefreshToken()) {
@@ -76,10 +91,13 @@ export const useSession = create<SessionState>()(
             return;
           }
           // Sin identidad local utilizable: solo el servidor puede decir quién es.
+          const subject = storedTokenSubject();
           try {
             const user = await authApi.me();
-            set({ user, unverified: false });
+            // Mientras tanto pudo ingresar otro usuario: su sesión manda.
+            if (generation === session && storedTokenSubject() === user.id) set({ user, unverified: false });
           } catch (error) {
+            if (generation !== session || storedTokenSubject() !== subject) return;
             // Credenciales rechazadas: se limpian. Sin conexión se conservan para intentarlo al reconectar.
             if (!isConnectivityError(error) && !(error instanceof OwnerChangedError)) clearTokens();
             set({ user: null, unverified: false });
@@ -93,14 +111,19 @@ export const useSession = create<SessionState>()(
       },
       revalidate: async () => {
         if (!getAccessToken() && !getRefreshToken()) return;
+        const session = generation;
         const expected = get().user?.id ?? null;
+        const subject = storedTokenSubject();
+        // La respuesta solo vale para la sesión que la pidió: mismo usuario activo y mismas credenciales.
+        const stillCurrent = () => generation === session && get().user?.id === expected && storedTokenSubject() === subject;
         try {
           const user = await authApi.me();
-          // Solo se aplica si mientras tanto no cambió el usuario del dispositivo.
-          if (expected === null || user.id === expected) set({ user, unverified: false });
+          if (!stillCurrent() || user.id !== subject || (expected !== null && user.id !== expected)) return;
+          set({ user, unverified: false });
         } catch (error) {
           // Sin conexión, o la sesión ya es de otro usuario: no se toca nada.
-          if (isConnectivityError(error) || error instanceof OwnerChangedError) return;
+          if (isConnectivityError(error) || error instanceof OwnerChangedError || !stillCurrent()) return;
+          nextSession();
           clearTokens();
           set({ user: null, unverified: false });
         }
@@ -118,4 +141,7 @@ export const useSession = create<SessionState>()(
 );
 
 // El servidor rechazó la sesión: la interfaz vuelve al ingreso; la cola conserva sus operaciones.
-onSessionExpired(() => useSession.setState({ user: null, unverified: false }));
+onSessionExpired(() => {
+  nextSession();
+  useSession.setState({ user: null, unverified: false });
+});

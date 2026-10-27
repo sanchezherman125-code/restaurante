@@ -2,8 +2,9 @@ import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { ordersApi, preparationApi, reportsApi, shiftsApi, tablesApi } from "../../api/endpoints";
 import { Icon, type IconName } from "../../components/Icon";
-import { Kpi, PageHeader, SkeletonList } from "../../components/Layout";
+import { Kpi, PageHeader, SkeletonList, StaleNotice } from "../../components/Layout";
 import { money } from "../../hooks/useElapsed";
+import { freshness } from "../../lib/freshness";
 import { PAYMENT_METHOD } from "../../lib/labels";
 import type { Order } from "../../types/api";
 
@@ -55,15 +56,27 @@ export function DashboardPage() {
     return <div className="page"><PageHeader title="Panel" /><SkeletonList rows={3} height={96} label="Cargando panel" /></div>;
   }
 
+  // Sin respuesta del servidor ni copia local, cada cifra se muestra como "—", nunca como un cero confirmado.
+  const queries = [shift, sales, orders, tables, kitchen, grill];
+  const unconfirmed = queries.filter((query) => ["stale", "unavailable"].includes(freshness(query)));
+  const copies = unconfirmed.filter((query) => query.data !== undefined).map((query) => query.dataUpdatedAt);
+  const missing = unconfirmed.length > copies.length;
+
   const data = sales.data;
   const openShift = shift.data && shift.data.status === "OPEN" ? shift.data : null;
   const active: Order[] = orders.data ?? [];
-  const readyToDeliver = active.filter((order) => order.items.some((item) => item.status === "READY")).length;
-  const unpaid = active.filter((order) => Number(order.total) - Number(order.paid_amount) > 0.001).length;
-  const tasksOf = (groups: typeof kitchen.data) => (groups ?? []).flatMap((group) => group.tasks).filter((task) => task.status === "PENDING" || task.status === "PREPARING").length;
+  const readyToDeliver = orders.data ? active.filter((order) => order.items.some((item) => item.status === "READY")).length : null;
+  const unpaid = orders.data ? active.filter((order) => Number(order.total) - Number(order.paid_amount) > 0.001).length : null;
+  const tasksOf = (groups: typeof kitchen.data) => groups
+    ? groups.flatMap((group) => group.tasks).filter((task) => task.status === "PENDING" || task.status === "PREPARING").length
+    : null;
+  const kitchenTasks = tasksOf(kitchen.data);
+  const grillTasks = tasksOf(grill.data);
   const occupied = (tables.data ?? []).filter((table) => table.status === "OPEN").length;
   const activeTables = (tables.data ?? []).filter((table) => table.is_active).length;
   const net = Number(data?.net_result ?? 0);
+  const amount = (value: string | undefined) => (data ? money(value) : "—");
+  const count = (value: number | null) => value ?? "—";
 
   return (
     <div className="page">
@@ -71,11 +84,20 @@ export function DashboardPage() {
         title="Panel"
         subtitle={openShift
           ? `Turno abierto desde las ${new Date(openShift.opened_at).toLocaleTimeString("es-PE", { hour: "2-digit", minute: "2-digit" })}`
-          : "No hay un turno abierto"}
+          : shift.data === undefined ? "Turno sin confirmar" : "No hay un turno abierto"}
         actions={<button className="btn secondary" onClick={() => navigate("/turnos")}><Icon name="shift" />{openShift ? "Gestionar turno" : "Abrir turno"}</button>}
       />
 
-      {!openShift ? (
+      {unconfirmed.length > 0 ? (
+        <StaleNotice
+          message={copies.length === 0 ? "Sin conexión con el servidor: las cifras marcadas «—» no están disponibles."
+            : missing ? "Sin conexión con el servidor: las cifras pueden no estar al día y las marcadas «—» no están disponibles."
+            : "Sin conexión con el servidor: las cifras pueden no estar al día."}
+          updatedAt={copies.length > 0 ? Math.min(...copies) : undefined}
+          onRetry={() => unconfirmed.forEach((query) => void query.refetch())} />
+      ) : null}
+
+      {!openShift && shift.data !== undefined ? (
         <div className="empty-shift card">
           <Icon name="shift" />
           <div className="grow">
@@ -87,30 +109,30 @@ export function DashboardPage() {
       ) : null}
 
       <section aria-label="Resumen financiero del turno" className="kpi-grid">
-        <Kpi label="Ventas cobradas" value={money(data?.total_sales)} tone="accent" note={`${data?.orders_count ?? 0} ${(data?.orders_count ?? 0) === 1 ? "pedido" : "pedidos"}`} />
-        <Kpi label="Gastos" value={money(data?.total_expenses)} />
-        <Kpi label="Resultado neto" value={money(data?.net_result)} tone={net < 0 ? "neg" : undefined} note={net < 0 ? "Los gastos superan las ventas" : undefined} />
-        <Kpi label="Mesas atendidas" value={data?.tables_served ?? 0} note={`${data?.persons_served ?? 0} personas`} />
+        <Kpi label="Ventas cobradas" value={amount(data?.total_sales)} tone="accent" note={data ? `${data.orders_count} ${data.orders_count === 1 ? "pedido" : "pedidos"}` : "Sin datos"} />
+        <Kpi label="Gastos" value={amount(data?.total_expenses)} />
+        <Kpi label="Resultado neto" value={amount(data?.net_result)} tone={net < 0 ? "neg" : undefined} note={net < 0 ? "Los gastos superan las ventas" : undefined} />
+        <Kpi label="Mesas atendidas" value={data ? data.tables_served : "—"} note={data ? `${data.persons_served} personas` : "Sin datos"} />
       </section>
 
       <section aria-label="Operación en vivo">
         <div className="section-title"><h2>Ahora en el local</h2></div>
         <div className="live-grid">
-          <LiveTile icon="tables" label="Mesas ocupadas" value={`${occupied}/${activeTables}`} to="/mesas" />
-          <LiveTile icon="check" label="Pedidos con algo para entregar" value={readyToDeliver} tone={readyToDeliver > 0 ? "ok" : undefined} to="/pedidos" />
-          <LiveTile icon="money" label="Pedidos por cobrar" value={unpaid} tone={unpaid > 0 ? "wait" : undefined} to="/pedidos" />
-          <LiveTile icon="kitchen" label="Tareas en cocina" value={tasksOf(kitchen.data)} tone={tasksOf(kitchen.data) > 0 ? "run" : undefined} hint="pendientes y en curso" to="/comandas" />
-          <LiveTile icon="flame" label="Tareas en parrilla" value={tasksOf(grill.data)} tone={tasksOf(grill.data) > 0 ? "run" : undefined} hint="pendientes y en curso" to="/comandas" />
+          <LiveTile icon="tables" label="Mesas ocupadas" value={tables.data ? `${occupied}/${activeTables}` : "—"} to="/mesas" />
+          <LiveTile icon="check" label="Pedidos con algo para entregar" value={count(readyToDeliver)} tone={readyToDeliver ? "ok" : undefined} to="/pedidos" />
+          <LiveTile icon="money" label="Pedidos por cobrar" value={count(unpaid)} tone={unpaid ? "wait" : undefined} to="/pedidos" />
+          <LiveTile icon="kitchen" label="Tareas en cocina" value={count(kitchenTasks)} tone={kitchenTasks ? "run" : undefined} hint="pendientes y en curso" to="/comandas" />
+          <LiveTile icon="flame" label="Tareas en parrilla" value={count(grillTasks)} tone={grillTasks ? "run" : undefined} hint="pendientes y en curso" to="/comandas" />
         </div>
       </section>
 
       <div className="two-col">
         <Distribution title="Ventas por método de pago"
           rows={Object.entries(data?.sales_by_payment_method ?? {}).map(([method, amount]) => [PAYMENT_METHOD[method as keyof typeof PAYMENT_METHOD] ?? method, Number(amount)])}
-          empty="Aún no hay cobros registrados en este turno." />
+          empty={data ? "Aún no hay cobros registrados en este turno." : "Sin datos del servidor."} />
         <Distribution title="Ventas por mesero"
           rows={Object.entries(data?.sales_by_waiter ?? {}).map(([waiter, amount]) => [waiter, Number(amount)])}
-          empty="Aún no hay ventas atribuidas a un mesero." />
+          empty={data ? "Aún no hay ventas atribuidas a un mesero." : "Sin datos del servidor."} />
       </div>
     </div>
   );

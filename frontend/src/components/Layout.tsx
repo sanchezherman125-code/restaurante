@@ -2,6 +2,7 @@ import { useEffect, useId, useRef } from "react";
 import type { ReactNode } from "react";
 import { Icon, type IconName } from "./Icon";
 import { toneClass, type Tone } from "../lib/labels";
+import { updatedAtLabel } from "../lib/freshness";
 
 export function PageHeader({ title, subtitle, actions }: { title: string; subtitle?: ReactNode; actions?: ReactNode }) {
   return (
@@ -23,6 +24,28 @@ export function EmptyState({ icon = "tables", title, hint, action }: { icon?: Ic
       {hint ? <div className="hint">{hint}</div> : null}
       {action}
     </div>
+  );
+}
+
+/** Datos no confirmados por el servidor: se muestra la última copia y desde cuándo. */
+export function StaleNotice({ message, updatedAt, onRetry }: { message: string; updatedAt?: number; onRetry?: () => void }) {
+  return (
+    <div className="offline-banner" role="status" data-testid="stale-notice">
+      <Icon name="wifiOff" />
+      <span className="grow">
+        {message}
+        {updatedAt ? <> Última actualización: <strong>{updatedAtLabel(updatedAt)}</strong>.</> : null}
+      </span>
+      {onRetry ? <button className="btn small secondary" onClick={onRetry}>Reintentar</button> : null}
+    </div>
+  );
+}
+
+/** El servidor no respondió y no hay copia local: nunca se muestra como "no hay nada". */
+export function UnavailableState({ title, hint, onRetry }: { title: string; hint: string; onRetry?: () => void }) {
+  return (
+    <EmptyState icon="wifiOff" title={title} hint={hint}
+      action={onRetry ? <button className="btn secondary" onClick={onRetry}><Icon name="refresh" />Reintentar</button> : undefined} />
   );
 }
 

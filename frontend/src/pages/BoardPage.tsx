@@ -339,24 +339,51 @@ function SoldOutModal({ area, onClose }: { area: string; onClose: () => void }) 
   );
 }
 
+
 export function BoardPage() {
   const role = useSession((state) => state.user?.role);
   const [adminArea, setAdminArea] = useState<"KITCHEN" | "GRILL">("KITCHEN");
-  const area = role === "GRILL" ? "GRILL" : role === "KITCHEN" ? "KITCHEN" : adminArea;
+
+  const area =
+    role === "GRILL"
+      ? "GRILL"
+      : role === "KITCHEN"
+        ? "KITCHEN"
+        : adminArea;
 
   return (
     <div className="page wide" style={{ gap: "var(--s4)" }}>
       {role === "ADMIN" ? (
-        <div className="segmented" role="group" aria-label="Área de preparación" style={{ alignSelf: "flex-start" }}>
-          <button className={area === "KITCHEN" ? "active" : ""} aria-pressed={area === "KITCHEN"} onClick={() => setAdminArea("KITCHEN")}>
-            <Icon name="kitchen" />Cocina
+        <div
+          className="segmented prep-area-switch"
+          role="group"
+          aria-label="Área de preparación"
+          style={{ alignSelf: "flex-start" }}
+        >
+          <button
+            type="button"
+            className={area === "KITCHEN" ? "active" : ""}
+            aria-pressed={area === "KITCHEN"}
+            onClick={() => setAdminArea("KITCHEN")}
+          >
+            <Icon name="kitchen" />
+            <span>Cocina</span>
           </button>
-          <button className={area === "GRILL" ? "active" : ""} aria-pressed={area === "GRILL"} onClick={() => setAdminArea("GRILL")}>
-            <Icon name="flame" />Parrilla
+
+          <button
+            type="button"
+            className={area === "GRILL" ? "active" : ""}
+            aria-pressed={area === "GRILL"}
+            onClick={() => setAdminArea("GRILL")}
+          >
+            <Icon name="flame" />
+            <span>Parrilla</span>
           </button>
         </div>
       ) : null}
+
       <Board area={area} />
     </div>
   );
 }
+

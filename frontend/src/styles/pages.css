@@ -163,6 +163,59 @@
 }
 @media (max-width: 599px) { .board-grid { grid-template-columns: minmax(0, 1fr); } }
 
+/* Selector de áreas: Cocina y Parrilla */
+.prep-area-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  width: max-content;
+  max-width: 100%;
+  padding: 4px;
+  overflow-x: auto;
+}
+
+.prep-area-switch > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  gap: 8px;
+  min-width: max-content;
+  min-height: 44px;
+  padding: 0 16px;
+  white-space: nowrap;
+  line-height: 1.2;
+}
+
+.prep-area-switch > button > svg {
+  display: block;
+  width: 20px;
+  height: 20px;
+  min-width: 20px;
+  min-height: 20px;
+  flex: 0 0 20px;
+}
+
+.prep-area-switch > button > span {
+  display: inline-block;
+  white-space: nowrap;
+}
+
+@media (max-width: 599px) {
+  .prep-area-switch > button {
+    min-height: 42px;
+    padding: 0 12px;
+  }
+
+  .prep-area-switch > button > svg {
+    width: 18px;
+    height: 18px;
+    min-width: 18px;
+    min-height: 18px;
+    flex-basis: 18px;
+  }
+}
+
 /* ---------- Administración ---------- */
 .admin-table-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr)); gap: var(--s3); }
 .admin-table { display: flex; align-items: center; gap: var(--s3); padding: var(--s3) var(--s4); background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-panel); color: inherit; text-align: left; transition: background var(--dur-fast), border-color var(--dur-fast); }
